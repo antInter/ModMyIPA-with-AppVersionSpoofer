@@ -18,7 +18,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check build configuration
         run: |
           xcodebuild -version
@@ -29,12 +29,64 @@ jobs:
         run: |
           set -o pipefail
           swift test --jobs 2 2>&1 | tee core-tests.log
+      # Build inline instead of calling compile.command so this remains a one-file fix.
+      # Generated plist values must be typed booleans BEFORE packaging and signing.
       - name: Build and package arm64 IPA
+        shell: bash
         run: |
-          set -o pipefail
-          bash compile.command 2>&1 | tee xcode-build.log
+          set -euo pipefail
+          {
+            ROOT="$PWD"
+            BUILD="$ROOT/build"
+            DIST="$ROOT/dist"
+            mkdir -p "$BUILD" "$DIST"
+            xcodebuild -resolvePackageDependencies -project ModMyIPA.xcodeproj -scheme ModMyIPA \
+              -derivedDataPath "$BUILD" -onlyUsePackageVersionsFromResolvedFile
+            xcodebuild -project ModMyIPA.xcodeproj -scheme ModMyIPA \
+              -configuration Release -destination 'generic/platform=iOS' -sdk iphoneos \
+              -derivedDataPath "$BUILD" -disableAutomaticPackageResolution \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
+              DEVELOPMENT_TEAM='' ONLY_ACTIVE_ARCH=NO ARCHS=arm64 build
+            APP="$BUILD/Build/Products/Release-iphoneos/ModMyIPA.app"
+            test -f "$APP/Info.plist"
+            test -f "$APP/ModMyIPA"
+            STAGING=$(mktemp -d "$BUILD/package.XXXXXX")
+            trap 'rm -rf "$STAGING"' EXIT
+            mkdir "$STAGING/Payload"
+            ditto "$APP" "$STAGING/Payload/ModMyIPA.app"
+
+            python3 - "$STAGING/Payload/ModMyIPA.app/Info.plist" <<'PY'
+          import pathlib
+          import plistlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          raw = path.read_bytes()
+          fmt = plistlib.FMT_BINARY if raw.startswith(b'bplist00') else plistlib.FMT_XML
+          info = plistlib.loads(raw)
+          for key in ('UIFileSharingEnabled', 'LSSupportsOpeningDocumentsInPlace'):
+              print(f'{key}: {info.get(key)!r} -> Boolean true')
+              info[key] = True
+          path.write_bytes(plistlib.dumps(info, fmt=fmt, sort_keys=False))
+          verified = plistlib.loads(path.read_bytes())
+          assert verified['UIFileSharingEnabled'] is True
+          assert verified['LSSupportsOpeningDocumentsInPlace'] is True
+          PY
+
+            rm -f "$DIST/VersionEditor-unsigned.ipa" "$DIST/VersionEditor-adhoc.ipa"
+            (cd "$STAGING" && /usr/bin/zip -qry "$DIST/VersionEditor-unsigned.ipa" Payload)
+            while IFS= read -r -d '' item; do
+              /usr/bin/codesign --force --sign - --timestamp=none "$item"
+            done < <(find "$STAGING/Payload/ModMyIPA.app" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0)
+            /usr/bin/codesign --force --sign - --timestamp=none \
+              --entitlements "$ROOT/ModMyIPA.xml" "$STAGING/Payload/ModMyIPA.app"
+            /usr/bin/codesign --verify --deep --strict "$STAGING/Payload/ModMyIPA.app"
+            (cd "$STAGING" && /usr/bin/zip -qry "$DIST/VersionEditor-adhoc.ipa" Payload)
+            python3 scripts/verify_ipa.py "$DIST/VersionEditor-unsigned.ipa" "$DIST/VersionEditor-adhoc.ipa"
+            (cd "$DIST" && shasum -a 256 VersionEditor-unsigned.ipa VersionEditor-adhoc.ipa > SHA256SUMS.txt)
+          } 2>&1 | tee xcode-build.log
       - name: Upload IPA packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: IPA-Version-Editor-${{ github.run_number }}
           path: |
@@ -45,7 +97,7 @@ jobs:
           retention-days: 30
       - name: Upload diagnostic logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: build-logs-${{ github.run_number }}
           path: |
