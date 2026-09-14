@@ -1,6 +1,7 @@
 # IPA Version Editor — ModMyIPA patch
 
-native SwiftUI app for iOS 15.0+, based on the supplied powenn/ModMyIPA source. no jailbreak hooks or privileged entitlements are used by this editor
+a fork that modifies IPA files allowing you to install the same app multiple times AND edit .plist files to spoof the app's version
+based on the supplied powenn/ModMyIPA source. no jailbreak hooks or privileged entitlements are used by this editor
 
 
 ## attribution and licensing
