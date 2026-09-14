@@ -1,0 +1,1978 @@
+diff --git a/.github/workflows/build-ipa.yml b/.github/workflows/build-ipa.yml
+new file mode 100644
+index 0000000..e35deb2
+--- /dev/null
++++ b/.github/workflows/build-ipa.yml
+@@ -0,0 +1,58 @@
++name: Build IPA
++on:
++  workflow_dispatch:
++  push:
++    branches: [main, master]
++    tags: ['v*']
++  pull_request:
++    branches: [main, master]
++permissions:
++  contents: read
++concurrency:
++  group: ipa-${{ github.workflow }}-${{ github.ref }}
++  cancel-in-progress: true
++jobs:
++  build:
++    runs-on: macos-15
++    timeout-minutes: 30
++    env:
++      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
++    steps:
++      - uses: actions/checkout@v4
++      - name: Check build configuration
++        run: |
++          xcodebuild -version
++          swift --version
++          plutil -lint ModMyIPA.xml ModMyIPA.xcodeproj/project.pbxproj
++          bash -n compile.command
++      - name: Test production IPA core
++        run: |
++          set -o pipefail
++          swift test --jobs 2 2>&1 | tee core-tests.log
++      - name: Build and package arm64 IPA
++        run: |
++          set -o pipefail
++          bash compile.command 2>&1 | tee xcode-build.log
++      - name: Upload IPA packages
++        uses: actions/upload-artifact@v4
++        with:
++          name: IPA-Version-Editor-${{ github.run_number }}
++          path: |
++            dist/VersionEditor-unsigned.ipa
++            dist/VersionEditor-adhoc.ipa
++            dist/SHA256SUMS.txt
++          if-no-files-found: error
++          retention-days: 30
++      - name: Upload diagnostic logs
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: build-logs-${{ github.run_number }}
++          path: |
++            core-tests.log
++            xcode-build.log
++          if-no-files-found: ignore
++          retention-days: 14
++      - name: Installation reminder
++        run: |
++          echo 'Download and extract the artifact ZIP. Re-sign VersionEditor-unsigned.ipa with your sideloading tool. VersionEditor-adhoc.ipa is an extra TrollStore test artifact, NOT Apple-signed. Minimum iOS: 15.0. No signing secrets are required.' >> "$GITHUB_STEP_SUMMARY"
+diff --git a/.gitignore b/.gitignore
+index a5b4ec9..0f82fe8 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,5 +1,13 @@
+ Payload
+ .DS_Store
+-build
++build/
++dist/
++.build/
++.swiftpm/
+ *.ipa
+ *.xcuserstate
++xcuserdata/
++*.log
++*.p12
++*.mobileprovision
++__pycache__/
+diff --git a/ModMyIPA.xcodeproj/project.pbxproj b/ModMyIPA.xcodeproj/project.pbxproj
+index 089afe7..0b7e907 100644
+--- a/ModMyIPA.xcodeproj/project.pbxproj
++++ b/ModMyIPA.xcodeproj/project.pbxproj
+@@ -7,6 +7,7 @@
+ 	objects = {
+ 
+ /* Begin PBXBuildFile section */
++		A10000000000000000000001 /* MachOInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* MachOInspector.swift */; };
+ 		B58A5FA129064F4100926816 /* ModMyIPAApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58A5FA029064F4100926816 /* ModMyIPAApp.swift */; };
+ 		B58A5FA329064F4100926816 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58A5FA229064F4100926816 /* ContentView.swift */; };
+ 		B58A5FA529064F4300926816 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B58A5FA429064F4300926816 /* Assets.xcassets */; };
+@@ -19,7 +20,7 @@
+ 		B58A5FBE29065DEA00926816 /* Launch Screen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B58A5FBD29065DEA00926816 /* Launch Screen.storyboard */; };
+ 		B58A5FC12906B12400926816 /* EditAppInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58A5FC02906B12400926816 /* EditAppInfoView.swift */; };
+ 		B58A5FC32906B15500926816 /* MyFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58A5FC22906B15500926816 /* MyFileManager.swift */; };
+-		B58A5FC72906B89D00926816 /* ZipArchive in Frameworks */ = {isa = PBXBuildFile; productRef = B58A5FC62906B89D00926816 /* ZipArchive */; };
++		B58A5FC72906B89D00926816 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = B58A5FC62906B89D00926816 /* ZIPFoundation */; };
+ 		B58A5FC92906BA3500926816 /* IPAFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58A5FC82906BA3500926816 /* IPAFile.swift */; };
+ 		B58A5FCB2906E95E00926816 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58A5FCA2906E95E00926816 /* Extensions.swift */; };
+ 		B58A5FCD290763AC00926816 /* PackageListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58A5FCC290763AB00926816 /* PackageListView.swift */; };
+@@ -27,6 +28,7 @@
+ /* End PBXBuildFile section */
+ 
+ /* Begin PBXFileReference section */
++		A10000000000000000000002 /* MachOInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MachOInspector.swift; sourceTree = "<group>"; };
+ 		B58A5F9D29064F4100926816 /* ModMyIPA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ModMyIPA.app; sourceTree = BUILT_PRODUCTS_DIR; };
+ 		B58A5FA029064F4100926816 /* ModMyIPAApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModMyIPAApp.swift; sourceTree = "<group>"; };
+ 		B58A5FA229064F4100926816 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+@@ -51,7 +53,7 @@
+ 			isa = PBXFrameworksBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
+-				B58A5FC72906B89D00926816 /* ZipArchive in Frameworks */,
++				B58A5FC72906B89D00926816 /* ZIPFoundation in Frameworks */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+@@ -126,6 +128,7 @@
+ 			children = (
+ 				B58A5FC22906B15500926816 /* MyFileManager.swift */,
+ 				B58A5FC82906BA3500926816 /* IPAFile.swift */,
++				A10000000000000000000002 /* MachOInspector.swift */,
+ 			);
+ 			path = Managers;
+ 			sourceTree = "<group>";
+@@ -147,7 +150,7 @@
+ 			);
+ 			name = ModMyIPA;
+ 			packageProductDependencies = (
+-				B58A5FC62906B89D00926816 /* ZipArchive */,
++				B58A5FC62906B89D00926816 /* ZIPFoundation */,
+ 			);
+ 			productName = ModMyIPA;
+ 			productReference = B58A5F9D29064F4100926816 /* ModMyIPA.app */;
+@@ -178,7 +181,7 @@
+ 			);
+ 			mainGroup = B58A5F9429064F4000926816;
+ 			packageReferences = (
+-				B58A5FC52906B89D00926816 /* XCRemoteSwiftPackageReference "ZipArchive" */,
++				B58A5FC52906B89D00926816 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+ 			);
+ 			productRefGroup = B58A5F9E29064F4100926816 /* Products */;
+ 			projectDirPath = "";
+@@ -212,6 +215,7 @@
+ 				B58A5FB8290653AF00926816 /* MyUserDefaults.swift in Sources */,
+ 				B58A5FB42906501F00926816 /* MainView.swift in Sources */,
+ 				B58A5FC92906BA3500926816 /* IPAFile.swift in Sources */,
++				A10000000000000000000001 /* MachOInspector.swift in Sources */,
+ 				B58A5FCF2907D5E400926816 /* ShareSheet.swift in Sources */,
+ 				B58A5FBA2906555000926816 /* FilePaths.swift in Sources */,
+ 				B58A5FB22906500A00926816 /* InfoView.swift in Sources */,
+@@ -276,7 +280,7 @@
+ 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+ 				GCC_WARN_UNUSED_FUNCTION = YES;
+ 				GCC_WARN_UNUSED_VARIABLE = YES;
+-				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
++				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+ 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+ 				MTL_FAST_MATH = YES;
+ 				ONLY_ACTIVE_ARCH = YES;
+@@ -330,7 +334,7 @@
+ 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+ 				GCC_WARN_UNUSED_FUNCTION = YES;
+ 				GCC_WARN_UNUSED_VARIABLE = YES;
+-				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
++				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+ 				MTL_ENABLE_DEBUG_INFO = NO;
+ 				MTL_FAST_MATH = YES;
+ 				SDKROOT = iphoneos;
+@@ -346,25 +350,28 @@
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+ 				CODE_SIGN_STYLE = Automatic;
+-				CURRENT_PROJECT_VERSION = 2;
++				CURRENT_PROJECT_VERSION = 3;
+ 				DEVELOPMENT_ASSET_PATHS = "\"ModMyIPA/Preview Content\"";
+-				DEVELOPMENT_TEAM = L4LN9U3ZS7;
++				DEVELOPMENT_TEAM = "";
+ 				ENABLE_PREVIEWS = YES;
+ 				GENERATE_INFOPLIST_FILE = YES;
++				INFOPLIST_KEY_CFBundleDisplayName = "IPA Version Editor";
++				INFOPLIST_KEY_UIFileSharingEnabled = YES;
++				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+ 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+ 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+ 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+-				INFOPLIST_KEY_UILaunchStoryboardName = "Launch Screen.storyboard";
++				INFOPLIST_KEY_UILaunchStoryboardName = "Launch Screen";
+ 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+ 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+ 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+-				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
++				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+ 				LD_RUNPATH_SEARCH_PATHS = (
+ 					"$(inherited)",
+ 					"@executable_path/Frameworks",
+ 				);
+-				MARKETING_VERSION = 1.0;
+-				PRODUCT_BUNDLE_IDENTIFIER = com.powen.ModMyIPA;
++				MARKETING_VERSION = 1.1.0;
++				PRODUCT_BUNDLE_IDENTIFIER = org.ipaeditor.VersionEditor;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				SWIFT_EMIT_LOC_STRINGS = YES;
+ 				SWIFT_VERSION = 5.0;
+@@ -378,25 +385,28 @@
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+ 				CODE_SIGN_STYLE = Automatic;
+-				CURRENT_PROJECT_VERSION = 2;
++				CURRENT_PROJECT_VERSION = 3;
+ 				DEVELOPMENT_ASSET_PATHS = "\"ModMyIPA/Preview Content\"";
+-				DEVELOPMENT_TEAM = L4LN9U3ZS7;
++				DEVELOPMENT_TEAM = "";
+ 				ENABLE_PREVIEWS = YES;
+ 				GENERATE_INFOPLIST_FILE = YES;
++				INFOPLIST_KEY_CFBundleDisplayName = "IPA Version Editor";
++				INFOPLIST_KEY_UIFileSharingEnabled = YES;
++				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+ 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+ 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+ 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+-				INFOPLIST_KEY_UILaunchStoryboardName = "Launch Screen.storyboard";
++				INFOPLIST_KEY_UILaunchStoryboardName = "Launch Screen";
+ 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+ 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+ 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+-				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
++				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+ 				LD_RUNPATH_SEARCH_PATHS = (
+ 					"$(inherited)",
+ 					"@executable_path/Frameworks",
+ 				);
+-				MARKETING_VERSION = 1.0;
+-				PRODUCT_BUNDLE_IDENTIFIER = com.powen.ModMyIPA;
++				MARKETING_VERSION = 1.1.0;
++				PRODUCT_BUNDLE_IDENTIFIER = org.ipaeditor.VersionEditor;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				SWIFT_EMIT_LOC_STRINGS = YES;
+ 				SWIFT_VERSION = 5.0;
+@@ -428,21 +438,21 @@
+ /* End XCConfigurationList section */
+ 
+ /* Begin XCRemoteSwiftPackageReference section */
+-		B58A5FC52906B89D00926816 /* XCRemoteSwiftPackageReference "ZipArchive" */ = {
++		B58A5FC52906B89D00926816 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+ 			isa = XCRemoteSwiftPackageReference;
+-			repositoryURL = "https://github.com/ZipArchive/ZipArchive.git";
++			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+ 			requirement = {
+-				branch = master;
+-				kind = branch;
++				version = 0.9.20;
++				kind = exactVersion;
+ 			};
+ 		};
+ /* End XCRemoteSwiftPackageReference section */
+ 
+ /* Begin XCSwiftPackageProductDependency section */
+-		B58A5FC62906B89D00926816 /* ZipArchive */ = {
++		B58A5FC62906B89D00926816 /* ZIPFoundation */ = {
+ 			isa = XCSwiftPackageProductDependency;
+-			package = B58A5FC52906B89D00926816 /* XCRemoteSwiftPackageReference "ZipArchive" */;
+-			productName = ZipArchive;
++			package = B58A5FC52906B89D00926816 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
++			productName = ZIPFoundation;
+ 		};
+ /* End XCSwiftPackageProductDependency section */
+ 	};
+diff --git a/ModMyIPA.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved b/ModMyIPA.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+index a08ae51..59a596d 100644
+--- a/ModMyIPA.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
++++ b/ModMyIPA.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+@@ -1,14 +1,14 @@
+ {
+-  "pins" : [
++  "pins": [
+     {
+-      "identity" : "ziparchive",
+-      "kind" : "remoteSourceControl",
+-      "location" : "https://github.com/ZipArchive/ZipArchive.git",
+-      "state" : {
+-        "branch" : "master",
+-        "revision" : "28312ba171da6647f410c6e5128a1fca9d2110b5"
++      "identity": "zipfoundation",
++      "kind": "remoteSourceControl",
++      "location": "https://github.com/weichsel/ZIPFoundation.git",
++      "state": {
++        "revision": "86fc841708997c5bce8545e23845125f4eb28493",
++        "version": "0.9.20"
+       }
+     }
+   ],
+-  "version" : 2
++  "version": 2
+ }
+diff --git a/ModMyIPA.xcodeproj/xcshareddata/xcschemes/ModMyIPA.xcscheme b/ModMyIPA.xcodeproj/xcshareddata/xcschemes/ModMyIPA.xcscheme
+new file mode 100644
+index 0000000..df3b530
+--- /dev/null
++++ b/ModMyIPA.xcodeproj/xcshareddata/xcschemes/ModMyIPA.xcscheme
+@@ -0,0 +1,17 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<Scheme LastUpgradeVersion="1640" version="1.3">
++  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
++    <BuildActionEntries>
++      <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
++        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B58A5F9C29064F4100926816" BuildableName="ModMyIPA.app" BlueprintName="ModMyIPA" ReferencedContainer="container:ModMyIPA.xcodeproj"/>
++      </BuildActionEntry>
++    </BuildActionEntries>
++  </BuildAction>
++  <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES" allowLocationSimulation="YES">
++    <BuildableProductRunnable runnableDebuggingMode="0">
++      <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B58A5F9C29064F4100926816" BuildableName="ModMyIPA.app" BlueprintName="ModMyIPA" ReferencedContainer="container:ModMyIPA.xcodeproj"/>
++    </BuildableProductRunnable>
++  </LaunchAction>
++  <AnalyzeAction buildConfiguration="Debug"/>
++  <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
++</Scheme>
+diff --git a/ModMyIPA.xml b/ModMyIPA.xml
+index 42a5622..899d535 100644
+--- a/ModMyIPA.xml
++++ b/ModMyIPA.xml
+@@ -1,10 +1,3 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+-<plist version="1.0">
+-<dict>
+-	<key>application-identifier</key>
+-	<string>com.powen.ModMyIPA</string>
+-	<key>platform-application</key>
+-	<true/>
+-</dict>
+-</plist>
++<plist version="1.0"><dict/></plist>
+diff --git a/ModMyIPA/ContentView.swift b/ModMyIPA/ContentView.swift
+index 3015244..a44b869 100644
+--- a/ModMyIPA/ContentView.swift
++++ b/ModMyIPA/ContentView.swift
+@@ -1,34 +1,20 @@
+-//
+-//  ContentView.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/24.
+-//
+-
+ import SwiftUI
+ 
+ struct ContentView: View {
++    @StateObject private var model = IPAFile.shared
+     var body: some View {
+-        NavigationView{
+-            MainView()
+-                .navigationBarTitleDisplayMode(.inline)
+-                .navigationBarTitle("ModMyIPA")
+-                .toolbar(content: {
+-                    NavigationLink(destination: {
+-                        InfoView()
+-                    }, label: {
+-                        Image(systemName: "info.circle")
+-                    })
+-                })
+-        }.onAppear(perform: {
+-            MyFileManager.shared.setUpPath()
+-            MyFileManager.shared.resetTmp()
+-        })
+-    }
+-}
+-
+-struct ContentView_Previews: PreviewProvider {
+-    static var previews: some View {
+-        ContentView()
++        TabView {
++            NavigationView { MainView() }.navigationViewStyle(.stack)
++                .tabItem { Label("Editor", systemImage: "slider.horizontal.3") }
++            NavigationView { PackageListView() }.navigationViewStyle(.stack)
++                .tabItem { Label("Exports", systemImage: "tray.full") }
++            NavigationView { InfoView() }.navigationViewStyle(.stack)
++                .tabItem { Label("About", systemImage: "info.circle") }
++        }
++        .tint(.indigo)
++        .sheet(item: $model.share) { item in ShareSheet(activityItems: [item.url]) }
++        .alert(item: $model.notice) { notice in
++            Alert(title: Text("IPA Editor"), message: Text(notice.message), dismissButton: .default(Text("OK")))
++        }
+     }
+ }
+diff --git a/ModMyIPA/Managers/IPAFile.swift b/ModMyIPA/Managers/IPAFile.swift
+index 510517d..d89e544 100644
+--- a/ModMyIPA/Managers/IPAFile.swift
++++ b/ModMyIPA/Managers/IPAFile.swift
+@@ -1,116 +1,178 @@
+-//
+-//  IPAFile.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/24.
+-//
+-
++// Original ModMyIPA by powenn. Reworked state and background processing.
+ import Foundation
+-import ZipArchive
++import SwiftUI
++import UIKit
++
++struct EditorNotice: Identifiable {
++    let id = UUID()
++    let message: String
++}
++struct SharedIPA: Identifiable {
++    let id = UUID()
++    let url: URL
++}
+ 
+-class IPAFile:ObservableObject {
+-    private init() {}
++@MainActor
++final class IPAFile: ObservableObject {
+     static let shared = IPAFile()
+-    
+-    var fileURL:URL = URL(fileURLWithPath: "")
+-    @Published var fileName:String = ""
+-    var contentDirURL:URL = URL(fileURLWithPath: "")
+-    var fileImported:Bool = false
+-    var payloadURL:URL = URL(fileURLWithPath: "")
+-    var payloadExist:Bool = false
+-    var appContentExist:Bool = false
+-    var infoPlistExist:Bool = false
+-    var app_executableExist:Bool = false
+-    @Published var appNameInPayload:String = ""
+-    var infoPlistPath:URL = URL(fileURLWithPath: "")
+-    
+-    var config: [String: Any]?
+-    @Published var app_executable:String = ""
+-    @Published var app_name:String = ""
+-    @Published var app_bundle:String = ""
+-    @Published var app_min_ios:String = ""
+-    
+-    @Published var processing:Bool = false
+-    
+-    func getPayloadURL()  {
+-        self.payloadURL = contentDirURL.appendingPathComponent("Payload")
+-        if FileManager.default.fileExists(atPath: payloadURL.path) {
+-            payloadExist=true
+-        } else {
+-            payloadExist = false
++    @Published private(set) var prepared: PreparedIPA?
++    @Published private(set) var processing = true
++    @Published private(set) var status = "Preparing storage…"
++    @Published private(set) var fileName = ""
++    @Published private(set) var outputs: [URL] = []
++    @Published var version = ""
++    @Published var build = ""
++    @Published var editVersion = true
++    @Published var editBuild = false
++    @Published var synchronizeNested = true
++    @Published var notice: EditorNotice?
++    @Published var share: SharedIPA?
++
++    private let queue = DispatchQueue(label: "ipa.editor.processing", qos: .userInitiated)
++    private var progress = Progress(totalUnitCount: 1)
++    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
++    private init() {
++        Task {
++            do {
++                let files = try await perform {
++                    let fm = FileManager.default
++                    if fm.fileExists(atPath: tmpDirectory.path) { try fm.removeItem(at: tmpDirectory) }
++                    try fm.createDirectory(at: tmpDirectory, withIntermediateDirectories: true)
++                    try fm.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
++                    for url in try fm.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil)
++                        where url.pathExtension == "partial" {
++                        try fm.removeItem(at: url)
++                    }
++                    return try Self.outputFiles()
++                }
++                outputs = files
++                status = "Ready to import"
++            } catch { show(error) }
++            processing = false
+         }
+     }
+-    
+-    func getAppNameInPayload() {
+-        let Content = try? FileManager.default.contentsOfDirectory(atPath: self.payloadURL.path)
+-        for content in Content! {
+-            if content.hasSuffix(".app") {
+-                appNameInPayload = content
+-                appContentExist = true
+-                break
+-            }
+-            appContentExist = false
++
++    private func perform<T>(_ work: @escaping () throws -> T) async throws -> T {
++        try await withCheckedThrowingContinuation { continuation in
++            queue.async { continuation.resume(with: Result { try work() }) }
+         }
+     }
+-    
+-    func getInfoPlistPath()  {
+-        if self.appContentExist {
+-            infoPlistPath = self.payloadURL.appendingPathComponent("\(self.appNameInPayload)/Info.plist")
+-        }
+-        if FileManager.default.fileExists(atPath: infoPlistPath.path){
+-            infoPlistExist = true
+-        } else {
+-            infoPlistExist = false
++
++    nonisolated private static func outputFiles() throws -> [URL] {
++        try FileManager.default.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil)
++            .filter { $0.pathExtension.lowercased() == "ipa" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
++    }
++
++    func show(_ error: Error) {
++        notice = EditorNotice(message: error.localizedDescription)
++        status = "Operation did not complete"
++    }
++
++    private func begin(_ text: String) -> Progress {
++        processing = true
++        status = text
++        progress = Progress(totalUnitCount: 1)
++        let current = progress
++        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "IPA processing") { current.cancel() }
++        return current
++    }
++
++    private func finish() {
++        if backgroundTask != .invalid {
++            UIApplication.shared.endBackgroundTask(backgroundTask)
++            backgroundTask = .invalid
+         }
++        processing = false
+     }
+-    
+-    func getInfoPlistValue() {
+-        do {
+-            // get Info in plist file
+-            let infoPlistData = try Data(contentsOf: infoPlistPath)
+-            if let dict = try PropertyListSerialization.propertyList(from: infoPlistData, options: [], format: nil) as? [String: Any] {
+-                config = dict
+-                // check is this Info.plist valid
+-                if ((config?["CFBundleExecutable"]) != nil) {
+-                    app_executable = (config?["CFBundleExecutable"] as! String)
+-                    app_name = config?["CFBundleName"] as! String
+-                    app_bundle = config?["CFBundleIdentifier"] as! String
+-                    app_min_ios = config?["MinimumOSVersion"] as! String? ?? "14.0"
+-                    app_executableExist = true
+-                } else {
+-                    app_executableExist = false
++
++    func cancel() { progress.cancel(); status = "Cancelling…" }
++
++    func importIPA(_ url: URL) {
++        guard !processing else { return }
++        let current = begin("Copying, validating, and extracting…")
++        let old = prepared
++        prepared = nil
++        fileName = ""
++        Task {
++            defer { finish() }
++            do {
++                let result = try await perform {
++                    if let old { try FileManager.default.removeItem(at: old.workspace) }
++                    let access = url.startAccessingSecurityScopedResource()
++                    defer { if access { url.stopAccessingSecurityScopedResource() } }
++                    // A false access result may mean the URL is already inside our sandbox.
++                    // Let the actual coordinated read determine whether it is accessible.
++                    let coordinator = NSFileCoordinator()
++                    var coordinationError: NSError?
++                    var result: Result<PreparedIPA, Error>?
++                    coordinator.coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinationError) { readableURL in
++                        result = Result { try MyFileManager().prepare(ipa: readableURL, workspaceParent: tmpDirectory, progress: current) }
++                    }
++                    if let coordinationError { throw coordinationError }
++                    guard let result else { throw IPAError("The file provider did not supply the IPA. Download it in Files and try again.") }
++                    return try result.get()
+                 }
+-            }
+-        } catch {
+-            print(error.localizedDescription)
++                prepared = result
++                fileName = url.lastPathComponent
++                version = result.main.version
++                build = result.main.build
++                editVersion = true
++                editBuild = false
++                synchronizeNested = true
++                status = "Ready to edit"
++            } catch { show(error) }
+         }
+     }
+-    
+-    func updateInfoPlistValue() {
+-        let plistDict = NSMutableDictionary(contentsOfFile: infoPlistPath.path)
+-        plistDict!.setObject(app_name, forKey: "CFBundleDisplayName" as NSCopying)
+-        plistDict!.write(toFile: infoPlistPath.path, atomically: false)
+-        plistDict!.setObject(app_bundle, forKey: "CFBundleIdentifier" as NSCopying)
+-        plistDict!.write(toFile: infoPlistPath.path, atomically: false)
+-    }
+-    
+-    func moveModdedPackage() {
+-        do {
+-            if appNameInPayload != "\(app_executable).app" {
+-                try FileManager.default.moveItem(at: payloadURL.appendingPathComponent(appNameInPayload), to: payloadURL.appendingPathComponent("\(app_executable).app"))
+-            }
+-            try FileManager.default.moveItem(at: contentDirURL, to: tmpDirectory.appendingPathComponent(app_executable))
+-        } catch {
+-            print(error.localizedDescription)
++
++    func exportIPA() {
++        guard !processing, let prepared else { return }
++        let changes = VersionChanges(
++            version: editVersion ? version.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
++            build: editBuild ? build.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
++            synchronizeNestedBundles: synchronizeNested)
++        do { try changes.validate() } catch { show(error); return }
++        let current = begin("Repackaging and verifying edited metadata…")
++        Task {
++            defer { finish() }
++            do {
++                let url = try await perform {
++                    try MyFileManager().export(prepared, changes: changes, outputDirectory: outputDirectory, progress: current)
++                }
++                // Publish success even if refreshing the directory list later fails.
++                outputs.append(url)
++                status = "Exported. Re-sign before installing."
++                share = SharedIPA(url: url)
++            } catch { show(error) }
+         }
+     }
+-    
+-    func zipToIPA() {
+-        SSZipArchive.createZipFile(atPath: outputDirectory.appendingPathComponent("\(app_executable).ipa").path,withContentsOfDirectory: tmpDirectory.appendingPathComponent(app_executable).path)
++
++    func deleteOutputs(_ urls: [URL]) {
++        guard !processing else { return }
++        _ = begin("Deleting selected exports…")
++        Task {
++            defer { finish() }
++            do {
++                let files = try await perform {
++                    for url in urls { try FileManager.default.removeItem(at: url) }
++                    return try Self.outputFiles()
++                }
++                outputs = files
++                status = "Exports updated"
++            } catch { show(error) }
++        }
+     }
+-            
+-    func resultIPAExist() -> Bool {
+-        return FileManager.default.fileExists(atPath: outputDirectory.appendingPathComponent("\(app_executable).ipa").path)
++
++    func clearImport() {
++        guard !processing, let prepared else { return }
++        _ = begin("Clearing imported working copy…")
++        Task {
++            defer { finish() }
++            do {
++                try await perform { try FileManager.default.removeItem(at: prepared.workspace) }
++                self.prepared = nil
++                fileName = ""
++                status = "Ready to import"
++            } catch { show(error) }
++        }
+     }
+-    
+ }
+diff --git a/ModMyIPA/Managers/MachOInspector.swift b/ModMyIPA/Managers/MachOInspector.swift
+new file mode 100644
+index 0000000..6bc5c19
+--- /dev/null
++++ b/ModMyIPA/Managers/MachOInspector.swift
+@@ -0,0 +1,77 @@
++import Foundation
++
++// Reads bounded headers/load commands, never maps an entire executable into RAM.
++// Detection only: does not modify encryption flags or decrypt any executable.
++enum MachOInspector {
++    static func isEncrypted(_ url: URL) throws -> Bool {
++        let handle = try FileHandle(forReadingFrom: url)
++        defer { try? handle.close() }
++        let fileSize = try handle.seekToEnd()
++        func read(_ offset: UInt64, _ count: Int) throws -> Data {
++            guard offset <= fileSize, UInt64(count) <= fileSize - offset else { throw IPAError("Truncated Mach-O executable.") }
++            try handle.seek(toOffset: offset)
++            guard let data = try handle.read(upToCount: count), data.count == count else { throw IPAError("Unable to read executable header.") }
++            return data
++        }
++        func integer(_ data: Data, _ offset: Int, _ count: Int, _ little: Bool) -> UInt64 {
++            var value: UInt64 = 0
++            for index in 0..<count {
++                let byte = data[offset + (little ? count - 1 - index : index)]
++                value = (value << 8) | UInt64(byte)
++            }
++            return value
++        }
++        func thin(_ offset: UInt64, _ size: UInt64) throws -> Bool {
++            guard size >= 28 else { throw IPAError("Invalid executable header.") }
++            let header = try read(offset, 28)
++            let magic = integer(header, 0, 4, false)
++            let little = magic == 0xcefaedfe || magic == 0xcffaedfe
++            let is64 = magic == 0xcffaedfe || magic == 0xfeedfacf
++            guard little || magic == 0xfeedface || magic == 0xfeedfacf else {
++                throw IPAError("Bundle executable is not a supported Mach-O file.")
++            }
++            let headerSize: UInt64 = is64 ? 32 : 28
++            let commands = integer(header, 16, 4, little)
++            let commandBytes = integer(header, 20, 4, little)
++            guard size >= headerSize, commandBytes <= size - headerSize,
++                  commandBytes <= 64 * 1024 * 1024, commands <= 16384 else { throw IPAError("Invalid Mach-O load commands.") }
++            var position = headerSize
++            let end = headerSize + commandBytes
++            var encrypted = false
++            for _ in 0..<commands {
++                guard position <= end, end - position >= 8 else { throw IPAError("Truncated Mach-O load command.") }
++                let command = try read(offset + position, 8)
++                let kind = integer(command, 0, 4, little)
++                let length = integer(command, 4, 4, little)
++                guard length >= 8, length <= end - position else { throw IPAError("Invalid Mach-O command size.") }
++                if kind == 0x21 || kind == 0x2c { // LC_ENCRYPTION_INFO / LC_ENCRYPTION_INFO_64
++                    guard length >= (kind == 0x2c ? 24 : 20) else { throw IPAError("Invalid encryption load command.") }
++                    let info = try read(offset + position, 20)
++                    if integer(info, 16, 4, little) != 0 { encrypted = true }
++                }
++                position += length
++            }
++            guard position == end else { throw IPAError("Mach-O command count and size disagree.") }
++            return encrypted
++        }
++        let header = try read(0, 8)
++        let magic = integer(header, 0, 4, false)
++        let fat = [UInt64(0xcafebabe), 0xbebafeca, 0xcafebabf, 0xbfbafeca].contains(magic)
++        if !fat { return try thin(0, fileSize) }
++        let little = magic == 0xbebafeca || magic == 0xbfbafeca
++        let fat64 = magic == 0xcafebabf || magic == 0xbfbafeca
++        let count = integer(header, 4, 4, little)
++        guard count > 0, count <= 32 else { throw IPAError("Invalid universal executable slice count.") }
++        let stride = fat64 ? 32 : 20
++        let tableEnd = 8 + count * UInt64(stride)
++        var encrypted = false
++        for index in 0..<count {
++            let arch = try read(8 + index * UInt64(stride), stride)
++            let offset = integer(arch, 8, fat64 ? 8 : 4, little)
++            let size = integer(arch, fat64 ? 16 : 12, fat64 ? 8 : 4, little)
++            guard offset >= tableEnd, offset <= fileSize, size <= fileSize - offset else { throw IPAError("Invalid universal executable slice bounds.") }
++            if try thin(offset, size) { encrypted = true }
++        }
++        return encrypted
++    }
++}
+diff --git a/ModMyIPA/Managers/MyFileManager.swift b/ModMyIPA/Managers/MyFileManager.swift
+index 7ea0b86..b212a90 100644
+--- a/ModMyIPA/Managers/MyFileManager.swift
++++ b/ModMyIPA/Managers/MyFileManager.swift
+@@ -1,72 +1,267 @@
+-//
+-//  FileManager.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/24.
+-//
+-
++// Original ModMyIPA project by powenn. New sandbox-only IPA version editing core.
++// ZIPFoundation is pinned to 0.9.20 in both the app and the core test package.
+ import Foundation
+-import ZipArchive
++import ZIPFoundation
++
++struct IPAError: LocalizedError {
++    let message: String
++    init(_ message: String) { self.message = message }
++    var errorDescription: String? { message }
++}
++
++struct IPALimits {
++    var maxEntries = 100_000
++    var maxBytes: UInt64 = 4 * 1024 * 1024 * 1024
++    var diskReserve: UInt64 = 128 * 1024 * 1024
++}
++
++struct IPABundle {
++    let path: String
++    let original: Data
++    let format: PropertyListSerialization.PropertyListFormat
++    let info: [String: Any]
++    var version: String { info["CFBundleShortVersionString"] as? String ?? "" }
++    var build: String { info["CFBundleVersion"] as? String ?? "" }
++}
++
++struct PreparedIPA {
++    let workspace: URL
++    let contents: URL
++    let bundles: [IPABundle] // main bundle first; then nested apps/extensions
++    let expandedBytes: UInt64
++    var main: IPABundle { bundles[0] }
++    var displayName: String {
++        main.info["CFBundleDisplayName"] as? String ?? main.info["CFBundleName"] as? String ?? "App"
++    }
++    var bundleIdentifier: String { main.info["CFBundleIdentifier"] as? String ?? "" }
++}
+ 
+-class MyFileManager {
+-    private init() {}
+-    static let shared = MyFileManager()
+-    
+-    func setUpPath() {
+-        if !FileManager.default.fileExists(atPath: tmpDirectory.path) {
+-            try? FileManager.default.createDirectory(
+-                at: tmpDirectory,
+-                withIntermediateDirectories: true,
+-                attributes: nil
+-            )
++struct VersionChanges {
++    // nil preserves the original value, even if it uses an unusual format.
++    var version: String?
++    var build: String?
++    var synchronizeNestedBundles = true
++    func validate() throws {
++        guard version != nil || build != nil else { throw IPAError("Choose at least one field to edit.") }
++        if let v = version {
++            guard v.utf8.count <= 64,
++                  v.range(of: #"\A[0-9]+\.[0-9]+\.[0-9]+\z"#, options: .regularExpression) != nil else {
++                throw IPAError("Use three numbers for the app version, for example 3.2.1.")
++            }
+         }
+-        if !FileManager.default.fileExists(atPath: outputDirectory.path) {
+-            try? FileManager.default.createDirectory(
+-                at: outputDirectory,
+-                withIntermediateDirectories: true,
+-                attributes: nil
+-            )
++        if let v = build {
++            guard v.range(of: #"\A[0-9]{1,4}(\.[0-9]{1,2}){0,2}\z"#, options: .regularExpression) != nil else {
++                throw IPAError("Use a release build number such as 123 or 123.4.5 (up to 4, 2, and 2 digits). Development suffixes are not supported for new values.")
++            }
+         }
+     }
+-    
+-    func resetTmp() {
+-        try? FileManager.default.removeItem(at: tmpDirectory)
+-        try? FileManager.default.createDirectory(
+-            at: tmpDirectory,
+-            withIntermediateDirectories: true,
+-            attributes: nil
+-        )
++}
++
++final class MyFileManager {
++    let limits: IPALimits
++    private let fm = FileManager.default
++    init(limits: IPALimits = IPALimits()) { self.limits = limits }
++
++    static func checkCancellation(_ progress: Progress) throws {
++        if progress.isCancelled { throw IPAError("Operation cancelled. No output was published.") }
+     }
+-    
+-    func resetOutput() {
+-        try? FileManager.default.removeItem(at: outputDirectory)
+-        try? FileManager.default.createDirectory(
+-            at: outputDirectory,
+-            withIntermediateDirectories: true,
+-            attributes: nil
+-        )
++
++    static func safePath(_ path: String, directory: Bool = false) throws -> String {
++        var value = path
++        if directory && value.hasSuffix("/") { value.removeLast() }
++        let parts = value.split(separator: "/", omittingEmptySubsequences: false)
++        guard !value.isEmpty, value.utf8.count <= 4096, !value.contains("\\"), !value.contains(":"),
++              !value.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
++              parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 }) else {
++            throw IPAError("Unsafe archive path: \(path.prefix(100))")
++        }
++        return value
+     }
+-    
+-    func extractIpa() {
+-        var destination:URL
+-        guard IPAFile.shared.fileURL.startAccessingSecurityScopedResource() else {
+-            return
++
++    private func requireSpace(at url: URL, bytes: UInt64) throws {
++        let attributes = try fm.attributesOfFileSystem(forPath: url.path)
++        if let free = attributes[.systemFreeSize] as? NSNumber, free.uint64Value < bytes + limits.diskReserve {
++            throw IPAError("Not enough storage for the IPA, its extracted contents, and a new output file.")
++        }
++    }
++
++    func prepare(ipa: URL, workspaceParent: URL, progress: Progress = Progress(totalUnitCount: 1)) throws -> PreparedIPA {
++        try fm.createDirectory(at: workspaceParent, withIntermediateDirectories: true)
++        let root = workspaceParent.appendingPathComponent(UUID().uuidString, isDirectory: true)
++        try fm.createDirectory(at: root, withIntermediateDirectories: true)
++        var succeeded = false
++        defer { if !succeeded { try? fm.removeItem(at: root) } }
++        let inputSize = (try fm.attributesOfItem(atPath: ipa.path)[.size] as? NSNumber)?.uint64Value ?? 0
++        guard inputSize > 0, inputSize <= limits.maxBytes else { throw IPAError("IPA is empty or exceeds the input size limit (normally 4 GiB).") }
++        try requireSpace(at: root, bytes: inputSize)
++        try Self.checkCancellation(progress)
++        let input = root.appendingPathComponent("input.ipa")
++        try fm.copyItem(at: ipa, to: input)
++        let archive = try Archive(url: input, accessMode: .read)
++        var entries: [(Entry, String)] = []
++        var seen = Set<String>()
++        var spellings: [String: String] = [:]
++        var kinds: [String: Bool] = [:]
++        var expanded: UInt64 = 0
++        for entry in archive {
++            try Self.checkCancellation(progress)
++            guard entries.count < limits.maxEntries else { throw IPAError("Archive contains too many entries.") }
++            guard entry.type != .symlink else { throw IPAError("Symbolic links are not supported by this editor. This includes legitimate symlinks in unusual IPAs.") }
++            let path = try Self.safePath(entry.path, directory: entry.type == .directory)
++            let key = path.precomposedStringWithCanonicalMapping.lowercased()
++            guard seen.insert(key).inserted else { throw IPAError("Duplicate archive path: \(path)") }
++            let parts = path.split(separator: "/")
++            for count in 1...parts.count {
++                let prefix = parts.prefix(count).joined(separator: "/")
++                let folded = prefix.precomposedStringWithCanonicalMapping.lowercased()
++                if let prior = spellings[folded], prior != prefix { throw IPAError("Case-colliding archive paths are not supported.") }
++                spellings[folded] = prefix
++            }
++            kinds[key] = entry.type == .directory
++            guard entry.uncompressedSize <= limits.maxBytes - expanded else { throw IPAError("Expanded archive exceeds the size limit (normally 4 GiB).") }
++            expanded += entry.uncompressedSize
++            entries.append((entry, path))
++        }
++        guard !entries.isEmpty else { throw IPAError("Archive is empty or unsupported.") }
++        for (_, path) in entries {
++            var parts = path.split(separator: "/")
++            while parts.count > 1 {
++                parts.removeLast()
++                let parent = parts.joined(separator: "/").precomposedStringWithCanonicalMapping.lowercased()
++                if kinds[parent] == false { throw IPAError("An archive file is also used as a directory.") }
++            }
++        }
++        try requireSpace(at: root, bytes: expanded)
++        let contents = root.appendingPathComponent("Contents", isDirectory: true)
++        try fm.createDirectory(at: contents, withIntermediateDirectories: true)
++        var actualTotal: UInt64 = 0
++        for (entry, path) in entries {
++            try Self.checkCancellation(progress)
++            let destination = contents.appendingPathComponent(path)
++            if entry.type == .directory {
++                try fm.createDirectory(at: destination, withIntermediateDirectories: true)
++                continue
++            }
++            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
++            guard fm.createFile(atPath: destination.path, contents: nil) else { throw IPAError("Unable to create extracted file.") }
++            let handle = try FileHandle(forWritingTo: destination)
++            defer { try? handle.close() }
++            var written: UInt64 = 0
++            let checksum = try archive.extract(entry, bufferSize: 64 * 1024) { chunk in
++                try Self.checkCancellation(progress)
++                let count = UInt64(chunk.count)
++                guard count <= entry.uncompressedSize - written, count <= self.limits.maxBytes - actualTotal else {
++                    throw IPAError("Archive expands beyond its declared size.")
++                }
++                try handle.write(contentsOf: chunk)
++                written += count
++                actualTotal += count
++            }
++            guard written == entry.uncompressedSize, checksum == entry.checksum else { throw IPAError("Archive checksum or size mismatch: \(path)") }
++        }
++        let payload = contents.appendingPathComponent("Payload", isDirectory: true)
++        let children = try fm.contentsOfDirectory(at: payload, includingPropertiesForKeys: [.isDirectoryKey])
++        let apps = try children.filter {
++            guard $0.pathExtension == "app" else { return false }
++            return try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
++        }
++        guard apps.count == 1, let app = apps.first else { throw IPAError("Expected exactly one Payload/*.app bundle.") }
++        let mainPath = "Payload/\(app.lastPathComponent)/Info.plist"
++        let nested = entries.map { $0.1 }.filter {
++            guard $0.hasPrefix("Payload/\(app.lastPathComponent)/"), $0 != mainPath, $0.hasSuffix("/Info.plist") else { return false }
++            let ext = URL(fileURLWithPath: $0).deletingLastPathComponent().pathExtension
++            return ext == "app" || ext == "appex"
++        }.sorted()
++        let bundles = try ([mainPath] + nested).map { path -> IPABundle in
++            let url = contents.appendingPathComponent(path)
++            let size = (try fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value ?? 0
++            guard size <= 8 * 1024 * 1024 else { throw IPAError("Info.plist is unexpectedly large.") }
++            let data = try Data(contentsOf: url)
++            var format = PropertyListSerialization.PropertyListFormat.binary
++            guard let info = try PropertyListSerialization.propertyList(from: data, options: [], format: &format) as? [String: Any],
++                  let executable = info["CFBundleExecutable"] as? String, !executable.contains("/"),
++                  let identifier = info["CFBundleIdentifier"] as? String, !identifier.isEmpty else {
++                throw IPAError("Invalid bundle metadata: \(path)")
++            }
++            _ = try Self.safePath(executable)
++            if try MachOInspector.isEncrypted(url.deletingLastPathComponent().appendingPathComponent(executable)) {
++                throw IPAError("Encrypted executable in \(path). This editor cannot decrypt App Store IPAs. Use an unencrypted build you are authorized to modify.")
++            }
++            return IPABundle(path: path, original: data, format: format, info: info)
++        }
++        try Self.checkCancellation(progress)
++        succeeded = true
++        return PreparedIPA(workspace: root, contents: contents, bundles: bundles, expandedBytes: expanded)
++    }
++
++    func export(_ prepared: PreparedIPA, changes: VersionChanges, outputDirectory: URL,
++                progress: Progress = Progress(totalUnitCount: 1)) throws -> URL {
++        try changes.validate()
++        try Self.checkCancellation(progress)
++        try fm.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
++        try requireSpace(at: outputDirectory, bytes: prepared.expandedBytes + prepared.expandedBytes / 10)
++        let output = outputDirectory.appendingPathComponent("VersionEdited-\(UUID().uuidString).ipa")
++        let partial = outputDirectory.appendingPathComponent(".\(UUID().uuidString).partial")
++        defer { try? fm.removeItem(at: partial) }
++        // Serialize changes in memory. The extracted original is never modified, so repeated
++        // exports, failed exports, and changing the nested-bundle option cannot leak old edits.
++        var replacements: [String: Data] = [:]
++        for (index, bundle) in prepared.bundles.enumerated() where index == 0 || changes.synchronizeNestedBundles {
++            var info = bundle.info
++            if let version = changes.version { info["CFBundleShortVersionString"] = version }
++            if let build = changes.build { info["CFBundleVersion"] = build }
++            replacements[bundle.path] = try PropertyListSerialization.data(fromPropertyList: info, format: bundle.format, options: 0)
+         }
+         do {
+-            destination  = tmpDirectory.appendingPathComponent(IPAFile.shared.fileName.replacingOccurrences(of: ".ipa", with: ".zip"))
+-            IPAFile.shared.contentDirURL = tmpDirectory.appendingPathComponent(IPAFile.shared.fileName.replacingOccurrences(of: ".ipa", with: ""))
+-            if FileManager.default.fileExists(atPath: destination.path) {
+-                try FileManager.default.removeItem(atPath: destination.path)
++            let original = try Archive(url: prepared.workspace.appendingPathComponent("input.ipa"), accessMode: .read)
++            let result = try Archive(url: partial, accessMode: .create)
++            for entry in original {
++                try Self.checkCancellation(progress)
++                let path = try Self.safePath(entry.path, directory: entry.type == .directory)
++                // Preserve ordinary permissions but discard setuid/setgid/sticky bits.
++                let permissions = ((entry.fileAttributes[.posixPermissions] as? NSNumber)?.uint16Value
++                                   ?? (entry.type == .directory ? 0o755 : 0o644)) & 0o777
++                let date = entry.fileAttributes[.modificationDate] as? Date ?? Date()
++                if let data = replacements[path] {
++                    try result.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count),
++                                        modificationDate: date, permissions: permissions, compressionMethod: .deflate) { offset, count in
++                        try Self.checkCancellation(progress)
++                        return data.subdata(in: Int(offset)..<min(Int(offset) + count, data.count))
++                    }
++                } else if entry.type == .directory {
++                    try result.addEntry(with: entry.path, type: .directory, uncompressedSize: Int64(0),
++                                        modificationDate: date, permissions: permissions, provider: { _, _ in Data() })
++                } else {
++                    let source = prepared.contents.appendingPathComponent(path)
++                    let size = (try fm.attributesOfItem(atPath: source.path)[.size] as? NSNumber)?.int64Value ?? 0
++                    guard UInt64(size) == entry.uncompressedSize else { throw IPAError("Imported contents changed. Please import the IPA again.") }
++                    let handle = try FileHandle(forReadingFrom: source)
++                    defer { try? handle.close() }
++                    try result.addEntry(with: entry.path, type: .file, uncompressedSize: size,
++                                        modificationDate: date, permissions: permissions,
++                                        compressionMethod: .deflate, bufferSize: 64 * 1024) { offset, count in
++                        try Self.checkCancellation(progress)
++                        try handle.seek(toOffset: UInt64(offset))
++                        return try handle.read(upToCount: count) ?? Data()
++                    }
++                }
++            }
++        } // closes output before verification
++        let verified = try Archive(url: partial, accessMode: .read)
++        for (path, expected) in replacements {
++            guard let entry = verified[path], entry.uncompressedSize == UInt64(expected.count) else { throw IPAError("Export verification failed: Info.plist missing or wrong size.") }
++            var data = Data()
++            let crc = try verified.extract(entry) { chunk in
++                try Self.checkCancellation(progress)
++                guard chunk.count <= expected.count - data.count else { throw IPAError("Export verification failed.") }
++                data.append(chunk)
+             }
+-            try FileManager.default.copyItem(at: IPAFile.shared.fileURL, to: destination)
+-            print("Copied file from \(IPAFile.shared.fileURL.path) to \(destination.path)")
+-            try SSZipArchive.unzipFile(atPath: destination.path, toDestination: IPAFile.shared.contentDirURL.path, overwrite: true, password: nil)
+-            print("Unzipped file from \(destination.path)to\(IPAFile.shared.contentDirURL.path)")
+-            IPAFile.shared.fileImported = true
+-            
+-        } catch {
+-            print(error.localizedDescription)
++            guard crc == entry.checksum, data == expected else { throw IPAError("Export verification failed: modified values do not match.") }
+         }
+-        IPAFile.shared.fileURL.stopAccessingSecurityScopedResource()
++        try Self.checkCancellation(progress)
++        // Original signatures/profiles remain for the external signer to inspect and replace.
++        // They are no longer valid for this edited IPA. This function does NOT sign anything.
++        try fm.moveItem(at: partial, to: output)
++        return output
+     }
+ }
+diff --git a/ModMyIPA/Misc/FilePaths.swift b/ModMyIPA/Misc/FilePaths.swift
+index 8b1fbe3..d3e3095 100644
+--- a/ModMyIPA/Misc/FilePaths.swift
++++ b/ModMyIPA/Misc/FilePaths.swift
+@@ -1,12 +1,7 @@
+-//
+-//  FilePaths.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/24.
+-//
+-
+ import Foundation
+ 
+ let docPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+-let tmpDirectory = docPath.appendingPathComponent("tmp")
+-let outputDirectory = docPath.appendingPathComponent("output")
++// Working copies are private, ephemeral, and not exposed through Files sharing.
++let tmpDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
++    .appendingPathComponent("IPAEditorWork", isDirectory: true)
++let outputDirectory = docPath.appendingPathComponent("Exports", isDirectory: true)
+diff --git a/ModMyIPA/Views/EditAppInfoView.swift b/ModMyIPA/Views/EditAppInfoView.swift
+index 4c9bd16..1e4d3e9 100644
+--- a/ModMyIPA/Views/EditAppInfoView.swift
++++ b/ModMyIPA/Views/EditAppInfoView.swift
+@@ -1,44 +1,30 @@
+-//
+-//  ModifyView.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/24.
+-//
+-
+ import SwiftUI
+ 
+ struct EditAppInfoView: View {
+-    @StateObject var ipafile:IPAFile = .shared
+-    @Environment(\.presentationMode) var presentationMode
+-    
++    @ObservedObject private var model = IPAFile.shared
+     var body: some View {
+-        VStack{
+-            VStack(alignment: .leading) {
+-                Text("Customize App Name")
+-                TextField("App Name", text: $ipafile.app_name)
+-                    .textFieldStyle(.roundedBorder)
+-                Text("Customize App Package Name\n(The name of .app directory)")
+-                TextField("App Package Name", text: $ipafile.app_executable)
+-                    .textFieldStyle(.roundedBorder)
+-                Text("Customize App Bundle")
+-                TextField("App Bundle", text: $ipafile.app_bundle)
+-                    .textFieldStyle(.roundedBorder)
+-            }.padding()
+-            Button(action: {
+-                self.presentationMode.wrappedValue.dismiss()
+-            }, label: {
+-                Text("Done")
+-            }).padding()
+-        }
+-        .padding()
+-        .onTapGesture {
+-            hideKeyboard()
++        Section {
++            Toggle("Edit app version", isOn: $model.editVersion)
++            if model.editVersion {
++                TextField("For example 3.2.1", text: $model.version)
++                    .keyboardType(.numbersAndPunctuation)
++                    .textInputAutocapitalization(.never).disableAutocorrection(true)
++                    .accessibilityLabel("New app version")
++            }
++            Toggle("Edit build number", isOn: $model.editBuild)
++            if model.editBuild {
++                TextField("For example 123", text: $model.build)
++                    .keyboardType(.numbersAndPunctuation)
++                    .textInputAutocapitalization(.never).disableAutocorrection(true)
++                    .accessibilityLabel("New build number")
++            }
++            if (model.prepared?.bundles.count ?? 0) > 1 {
++                Toggle("Sync nested apps and extensions", isOn: $model.synchronizeNested)
++            }
++        } header: {
++            Text("New version metadata")
++        } footer: {
++            Text("App version changes CFBundleShortVersionString. Build changes CFBundleVersion. Disabled fields keep their original values. Sync changes only enabled fields in nested .app/.appex bundles, not frameworks. Bundle IDs, executables, and MinimumOSVersion are left alone.")
+         }
+     }
+ }
+-
+-struct EditAppInfoView_Previews: PreviewProvider {
+-    static var previews: some View {
+-        EditAppInfoView()
+-    }
+-}
+diff --git a/ModMyIPA/Views/InfoView.swift b/ModMyIPA/Views/InfoView.swift
+index 6e139a8..f4f203a 100644
+--- a/ModMyIPA/Views/InfoView.swift
++++ b/ModMyIPA/Views/InfoView.swift
+@@ -1,56 +1,35 @@
+-//
+-//  InfoView.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/24.
+-//
+-
+ import SwiftUI
+ 
+ struct InfoView: View {
+-    @StateObject var myuserdefaults:MyUserDefaults = .shared
+-    @State var showPackagesList:Bool = false
+-    
++    @ObservedObject private var model = IPAFile.shared
+     var body: some View {
+         Form {
+-            Section(header: Text("version")){
+-                Text("\(appVersion!).\(buildVersion!)")
++            Section("About") {
++                Text("IPA Version Editor \(appVersion ?? "?") (\(buildVersion ?? "?"))")
++                Text("Native SwiftUI patch of ModMyIPA by powenn. Inspired by analysis of 0xkuj's 3DAppVersionSpoofer.")
+             }
+-            Section(header: Text("View files"), content: {
+-                Button("View the output package list", action: {
+-                    print("View package list button pressed")
+-                    showPackagesList.toggle()
+-                }).sheet(isPresented: $showPackagesList, content: {
+-                    NavigationView {
+-                        PackageListView()
+-                            .navigationBarTitle("PackageList", displayMode: .inline)
+-                    }
+-                })
+-            })
+-            Section(header: Text("Clean up"), content: {
+-                Button("Clean up tmp directory", action: {
+-                    MyFileManager.shared.resetTmp()
+-                })
+-                Button("Clean up output directory", action: {
+-                    MyFileManager.shared.resetOutput()
+-                })
+-            })
+-            Section(header: Text("source code")){
+-                Link(destination: URL(string: "https://github.com/powenn/ModMyIPA")!, label: {
+-                    HStack{
+-                        Text("View on Github")
+-                    }
+-                })
++            Section("What this does") {
++                Text("Edits version keys in an imported IPA's Info.plist and repackages it. Apps reading those keys can see the new values after re-signing and installation.")
+             }
+-            Section(footer: Text("Made by @powenn"), content: {})
+-            Section(footer: Text("Output files path : \(outputDirectory.path)"), content: {})
+-            Section(footer: Text("A nice sentence inspired me\nfrom a nice guy named yammy in Discord\n\"If it's what you want to do,\ndon't let anybody stop you\""), content: {})
+-        }
+-    }
+-}
+-
+-struct InfoView_Previews: PreviewProvider {
+-    static var previews: some View {
+-        InfoView()
++            Section("What this does not do") {
++                Text("No jailbreak hooks, iOS version spoofing, dylib injection, signing, installation, App Store decryption, or server-check bypass. Hardcoded versions, receipts, and integrity checks may still prevent an app from working.")
++                Text("An edited minimum iOS requirement would not add missing operating-system APIs. This editor leaves it unchanged.")
++                Text("Encrypted main/nested app executables are rejected. Symlinks, ambiguous paths, and archives exceeding 4 GiB or 100,000 entries are also rejected. The encryption check is not a full compatibility or security audit of every library.")
++            }
++            Section("Testing on iOS 15.6.1") {
++                Text("TrollStore is useful for an initial test, but does not prove normal sideloading works. Also test a sandboxed install through AltStore, SideStore, or another signer. Disable the original version-spoofing tweak for the target app while comparing results.")
++                Text("Keep the app in the foreground while working on large IPAs. iOS grants only limited background execution time; cancellation may wait for file-provider copying to finish.")
++            }
++            Section("Storage") {
++                Button("Clear imported working copy", role: .destructive) { model.clearImport() }
++                    .disabled(model.processing || model.prepared == nil)
++                Text("Working copies are cleared on next launch. Exports remain until you delete them. The editor makes no network requests and uploads no IPA contents.")
++            }
++            Section("Upstream projects") {
++                Link("ModMyIPA — powenn", destination: URL(string: "https://github.com/powenn/ModMyIPA")!)
++                Link("3DAppVersionSpoofer — 0xkuj", destination: URL(string: "https://github.com/0xkuj/3DAppVersionSpoofer")!)
++                Link("ZIPFoundation — archive library", destination: URL(string: "https://github.com/weichsel/ZIPFoundation")!)
++            }
++        }.navigationTitle("About & limitations")
+     }
+ }
+diff --git a/ModMyIPA/Views/MainView.swift b/ModMyIPA/Views/MainView.swift
+index cbca6c4..fcb85a8 100644
+--- a/ModMyIPA/Views/MainView.swift
++++ b/ModMyIPA/Views/MainView.swift
+@@ -1,127 +1,79 @@
+-//
+-//  MainView.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/24.
+-//
+-
++// ModMyIPA version editor; based on powenn's import/edit/export interface.
+ import SwiftUI
+ import UniformTypeIdentifiers
+ 
+ struct MainView: View {
+-    @StateObject var myuserdefaults:MyUserDefaults = .shared
+-    @StateObject var ipafile:IPAFile = .shared
+-    
+-    @State var isImporting: Bool = false
+-    @State var showInvalidAlert:Bool = false
+-    @State var alertTitle:String = ""
+-    @State var alertMeaasge:String = ""
+-    
+-    @State var showEditInfo:Bool = false
+-    @State var showSuccessedAlert:Bool = false
+-    
+-    func invalidFileAlert(title:String, message:String) {
+-        ipafile.fileName = ""
+-        alertTitle = title
+-        alertMeaasge = message
+-        showInvalidAlert.toggle()
+-        ipafile.fileImported = false
+-    }
+-    
++    @ObservedObject private var model = IPAFile.shared
++    @State private var isImporting = false
++    @State private var confirmExport = false
++
+     var body: some View {
+-        VStack{
+-            Text(ipafile.fileName != "" ? ipafile.fileName: "No .ipa file selected").padding()
+-            Button("Select IPA File", action: {
+-                print("Select file button pressed")
+-                isImporting.toggle()
+-            }).disabled(ipafile.processing || isImporting)
+-                .padding()
+-                .alert(isPresented: $showInvalidAlert) {
+-                    Alert(title: Text(alertTitle), message: Text(alertMeaasge), dismissButton: .default(Text("OK")))
++        Form {
++            Section {
++                Label("IPA Version Editor", systemImage: "shippingbox")
++                    .font(.title2.bold()).padding(.vertical, 8)
++                Text("Import a copy. Edit its version. Export for re-signing.")
++                    .foregroundColor(.secondary)
++                Button { isImporting = true } label: {
++                    Label(model.prepared == nil ? "Import IPA" : "Import another IPA", systemImage: "square.and.arrow.down")
+                 }
+-                .fileImporter(
+-                    isPresented: $isImporting,
+-                    allowedContentTypes: [UTType(filenameExtension: "ipa")!],
+-                    allowsMultipleSelection: false
+-                ) { result in
+-                    do {
+-                        ipafile.fileURL = try result.get().first!
+-                        ipafile.fileName = ipafile.fileURL.lastPathComponent
+-                        print(ipafile.fileURL.path,ipafile.fileName)
+-                        MyFileManager.shared.extractIpa()
+-                        ipafile.getPayloadURL()
+-                        if !ipafile.payloadExist {
+-                            invalidFileAlert(title: "Invalid IPA File", message: "There is no payload content found")
+-                            return
+-                        }
+-                        ipafile.getAppNameInPayload()
+-                        if !ipafile.appContentExist {
+-                            invalidFileAlert(title: "Invalid IPA File", message: "There is no app content inside payload")
+-                            return
+-                        }
+-                        ipafile.getInfoPlistPath()
+-                        if !ipafile.infoPlistExist {
+-                            invalidFileAlert(title: "Invalid IPA File", message: "There is no info.plist inside app content")
+-                            return
+-                        }
+-                        ipafile.getInfoPlistValue()
+-                        if !ipafile.app_executableExist {
+-                            invalidFileAlert(title: "Invalid IPA File", message: "There is no executable binary inside app content")
+-                            return
+-                        }
+-                        print(ipafile.appNameInPayload)
+-                    }catch {
+-                        print(error.localizedDescription)
+-                    }
++                .disabled(model.processing)
++            } footer: {
++                Text("All processing stays on this device. The original file is never modified.")
++            }
++            if let prepared = model.prepared {
++                Section("Imported application") {
++                    Text(prepared.displayName).font(.headline)
++                    Text(model.fileName).font(.caption).textSelection(.enabled)
++                    Text(prepared.bundleIdentifier).font(.caption.monospaced()).textSelection(.enabled)
++                    row("Current app version", prepared.main.version)
++                    row("Current build", prepared.main.build)
++                    row("Minimum iOS (unchanged)", prepared.main.info["MinimumOSVersion"] as? String ?? "Not specified")
++                    row("Nested apps/extensions", String(prepared.bundles.count - 1))
+                 }
+-            Button("Edit IPA Info", action: {
+-                print("Edit IPA_INFO button pressed")
+-                showEditInfo.toggle()
+-            }).sheet(isPresented: $showEditInfo, content: {
+                 EditAppInfoView()
+-            })
+-            .disabled(!ipafile.fileImported||ipafile.processing)
+-            .padding()
+-            Button("Mod it", action: {
+-                print("Mod button pressed")
+-                print("APPNAME:\(ipafile.app_name)\nPACKAGENAME:\(ipafile.app_executable)\nAPPBUNDLE:\(ipafile.app_bundle)")
+-                ipafile.processing = true
+-                DispatchQueue.global(qos: .userInitiated).async {
+-                    ipafile.updateInfoPlistValue()
+-                    ipafile.moveModdedPackage()
+-                    ipafile.zipToIPA()
+-                    DispatchQueue.main.asyncAfter(deadline: .now()) {
+-                        ipafile.fileName = ""
+-                        ipafile.fileImported = false
+-                        ipafile.processing = false
+-                        if ipafile.resultIPAExist() {
+-                            showSuccessedAlert.toggle()
+-                        }
++                    .disabled(model.processing)
++                Section {
++                    Button { hideKeyboard(); confirmExport = true } label: {
++                        Label("Repackage and export IPA", systemImage: "square.and.arrow.up")
++                            .font(.headline)
+                     }
++                    .disabled(model.processing || (!model.editVersion && !model.editBuild))
++                } footer: {
++                    Text("Exporting invalidates the original signature. Sign and install the result using your sideloading tool. This is metadata editing, not a runtime hook or iOS upgrade.")
+                 }
+-            })
+-            .alert(isPresented: $showSuccessedAlert) {
+-                Alert(title: Text("Done"), message: Text("Success modded"), dismissButton: .default(Text("OK")))
+             }
+-            .disabled(!ipafile.fileImported||ipafile.processing)
+-            .padding()
+-            if ipafile.processing {
+-                ProgressView(label: {
+-                    Text("Processing")
+-                })
++            Section("Status") {
++                if model.processing {
++                    ProgressView(model.status)
++                    Button("Cancel operation", role: .cancel) { model.cancel() }
++                } else {
++                    Text(model.status).foregroundColor(.secondary)
++                }
+             }
+-            
+-            if isImporting {
+-                ProgressView(label: {
+-                    Text("Importing IPA File")
+-                })
++        }
++        .navigationTitle("Version Editor")
++        .fileImporter(isPresented: $isImporting, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
++            do {
++                guard let url = try result.get().first else { return }
++                guard url.pathExtension.lowercased() == "ipa" else { throw IPAError("Please choose a file ending in .ipa.") }
++                model.importIPA(url)
++            } catch {
++                if (error as NSError).code != NSUserCancelledError { model.show(error) }
+             }
+-        }.padding()
++        }
++        .confirmationDialog("Export an edited copy?", isPresented: $confirmExport, titleVisibility: .visible) {
++            Button("Export IPA for re-signing") { model.exportIPA() }
++        } message: {
++            Text("The app may still reject this version. Keep the original IPA and back up app data before installing. No signing or installation is performed here.")
++        }
+     }
+-}
+ 
+-struct MainView_Previews: PreviewProvider {
+-    static var previews: some View {
+-        MainView()
++    private func row(_ title: String, _ value: String) -> some View {
++        HStack(alignment: .top) {
++            Text(title)
++            Spacer()
++            Text(value.isEmpty ? "Not specified" : value).foregroundColor(.secondary).multilineTextAlignment(.trailing)
++        }
+     }
+ }
+diff --git a/ModMyIPA/Views/PackageListView.swift b/ModMyIPA/Views/PackageListView.swift
+index c47a398..b5cb7d3 100644
+--- a/ModMyIPA/Views/PackageListView.swift
++++ b/ModMyIPA/Views/PackageListView.swift
+@@ -1,51 +1,41 @@
+-//
+-//  PackageLIstView.swift
+-//  ModMyIPA
+-//
+-//  Created by 蕭博文 on 2022/10/25.
+-//
+-
+ import SwiftUI
+ 
+ struct PackageListView: View {
+-    @State var packageList = try! FileManager.default.contentsOfDirectory(atPath: outputDirectory.path)
+-    @State var showShareSheet:Bool = false
+-    @State var selectedPackage:String = ""
+-    
++    @ObservedObject private var model = IPAFile.shared
++    @State private var pendingDeletion: [URL] = []
++    @State private var confirmDelete = false
+     var body: some View {
+         List {
+-            ForEach(packageList, id: \.self) { package in
+-                HStack{
+-                    Text(package)
+-                        .font(.title3)
+-                    Spacer()
+-                    Button("", action: {
+-                        print("\(package) share tapped!")
+-                        showShareSheet.toggle()
+-                    }).sheet(isPresented: $showShareSheet, content: {
+-                        ShareSheet(activityItems: [outputDirectory.appendingPathComponent(package)])
+-                    })
++            Section {
++                if model.outputs.isEmpty {
++                    Label("No exported IPAs yet", systemImage: "tray")
++                    Text("Export an IPA from the editor, then share or save it here.").foregroundColor(.secondary)
++                }
++                ForEach(model.outputs, id: \.self) { url in
++                    Button { model.share = SharedIPA(url: url) } label: {
++                        HStack {
++                            Image(systemName: "doc.zipper").font(.title2)
++                            VStack(alignment: .leading, spacing: 4) {
++                                Text(url.lastPathComponent).font(.subheadline).lineLimit(2)
++                                Text("Tap to share or save to Files").font(.caption).foregroundColor(.secondary)
++                            }
++                            Spacer()
++                            Image(systemName: "square.and.arrow.up")
++                        }.padding(.vertical, 4)
++                    }.disabled(model.processing)
+                 }
+-                .contentShape(Rectangle())
+-                .padding()
++                .onDelete { indices in
++                    pendingDeletion = indices.compactMap { model.outputs.indices.contains($0) ? model.outputs[$0] : nil }
++                    confirmDelete = !pendingDeletion.isEmpty
++                }
++                .deleteDisabled(model.processing)
++            } footer: {
++                Text("These files require re-signing. Exports are also available under On My iPhone → IPA Version Editor → Exports. Swipe to delete an export.")
+             }
+-            .onDelete(perform: deleteItem)
+         }
+-        .listStyle(.automatic)
+-    }
+-    
+-    func deleteItem(at indexSet: IndexSet) {
+-        let tmpList = packageList
+-        packageList.remove(atOffsets: indexSet)
+-        let deleted:String = Set(tmpList).symmetricDifference(Set(packageList)).first!
+-        try! FileManager.default.removeItem(atPath: outputDirectory.appendingPathComponent(deleted).path)
+-        print("Deleted:\(deleted)")
+-        print("Left:\(packageList)")
+-    }
+-}
+-
+-struct PackageListView_Previews: PreviewProvider {
+-    static var previews: some View {
+-        PackageListView()
++        .navigationTitle("Exports")
++        .confirmationDialog("Delete selected exports?", isPresented: $confirmDelete, titleVisibility: .visible) {
++            Button("Delete", role: .destructive) { model.deleteOutputs(pendingDeletion) }
++        } message: { Text("This cannot be undone. Your original imported IPA is not affected.") }
+     }
+ }
+diff --git a/Package.swift b/Package.swift
+new file mode 100644
+index 0000000..f42d255
+--- /dev/null
++++ b/Package.swift
+@@ -0,0 +1,13 @@
++// swift-tools-version: 5.9
++import PackageDescription
++let package = Package(
++    name: "IPAVersionEditorCore",
++    platforms: [.macOS(.v12), .iOS(.v15)],
++    products: [.library(name: "IPACore", targets: ["IPACore"])],
++    dependencies: [.package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20")],
++    targets: [
++        .target(name: "IPACore", dependencies: ["ZIPFoundation"], path: "ModMyIPA/Managers",
++                exclude: ["IPAFile.swift"], sources: ["MyFileManager.swift", "MachOInspector.swift"]),
++        .testTarget(name: "IPACoreTests", dependencies: ["IPACore", "ZIPFoundation"], path: "Tests/IPACoreTests")
++    ]
++)
+diff --git a/README.md b/README.md
+index cc26aea..e0d4300 100644
+--- a/README.md
++++ b/README.md
+@@ -1,23 +1,78 @@
+-# ModMyIPA
++# IPA Version Editor — ModMyIPA patch
+ 
+-<p align="center">
+-  <a href="https://github.com/powenn/ModMyIPA/releases">
+-    <img alt="Releases" src="https://img.shields.io/github/downloads/powenn/ModMyIPA/total">
+-  </a>
+-  <a href="#">
+-    <img alt="Code Size in Bytes" src="https://img.shields.io/github/languages/code-size/powenn/ModMyIPA">
+-  </a>
+-</p>
++Native SwiftUI app for iOS 15.0+, based on the supplied powenn/ModMyIPA source. Import an IPA, edit version metadata, and export for external re-signing. No jailbreak hooks or privileged entitlements are used by this editor.
+ 
+-## An app that modifies IPA files allows you to install the same app multiple times
++## Build from Windows/Linux using GitHub
+ 
+-![screenshot][1]
+-![screenshot][2]
+-![screenshot][3]
++1. Fork https://github.com/powenn/ModMyIPA or use your own private working repository. This patch uses ModMyIPA, not the Theos tweak, as its base.
++2. Extract the supplied source package and copy its contents to your repository root. Include the hidden `.github` directory. `ModMyIPA.xcodeproj`, `Package.swift`, and `.github/workflows/build-ipa.yml` must be at the root. Do not upload just the archive file.
++3. Commit and push to main/master. Enable Actions in the fork if GitHub prompts you.
++4. Open Actions → Build IPA → Run workflow. No Apple ID, certificates, provisioning profiles, or signing secrets are needed to build. GitHub Actions availability/billing depends on your account.
++5. Download the successful run's `IPA-Version-Editor-<number>` artifact ZIP and extract it.
++6. Sign/install `VersionEditor-unsigned.ipa` using SideStore, AltStore, Sideloadly, or a compatible certificate-based signer. Normal signing limits, expiration, capabilities, and Developer Mode requirements still apply.
++7. `VersionEditor-adhoc.ipa` is an additional TrollStore test artifact. It is NOT Apple-signed or automatically permasigned. It cannot be installed directly on ordinary iOS without an appropriate signing/installation step.
+ 
++The workflow targets macos-15 and Xcode 16.4. If GitHub retires that Xcode installation, update DEVELOPER_DIR to an installed compatible version. Failed runs upload diagnostic logs when available. Share the first compiler error with surrounding lines if a build fails.
+ 
++On a Mac: `swift test --jobs 2`, then `bash compile.command`. Outputs are in `dist/`, with SHA-256 checksums.
+ 
+-[1]:https://github.com/powenn/ModMyIPA/blob/main/Screenshots/01.png
+-[2]:https://github.com/powenn/ModMyIPA/blob/main/Screenshots/02.png
+-[3]:https://github.com/powenn/ModMyIPA/blob/main/Screenshots/03.png
++## Use
+ 
++- Keep the original IPA and back up app data. Import only unencrypted builds you are authorized to modify.
++- Import IPA → edit app version (`CFBundleShortVersionString`, e.g. 3.2.1) → optionally edit build (`CFBundleVersion`, e.g. 123 or 123.4.5) → Repackage and export.
++- New versions use three numeric components. New build numbers use a conservative release format with up to 4/2/2 digits. Existing unusual values remain unchanged when the field is disabled.
++- Sync nested apps/extensions applies enabled fields to embedded .app/.appex bundles. Framework versions are not changed. Disabling sync can cause installation-time version mismatches.
++- Save/share through the share sheet; previous exports remain in Exports and Documents/Exports. Re-sign and install the modified IPA using your external tool.
++- Signing the editor does NOT sign the files it edits. Original signature/profile bytes are retained for signers to inspect/replace, but are invalid for the edited contents.
++
++Bundle identifiers, executable bytes, MinimumOSVersion, unrelated metadata, and ordinary file permission bits are preserved. No executable/app directory renaming is performed. Binary/XML plist format is preserved; key ordering may change. Repeated exports start from immutable imported values and use unique output filenames.
++
++## Important difference from 3DAppVersionSpoofer
++
++Inspection of the supplied 0xkuj/3DAppVersionSpoofer Tweak.x found that lines 178–217 hook NSBundle.infoDictionary and replace CFBundleShortVersionString at runtime using a separate preferences plist. Lines 219–227 optionally hook UIDevice.systemVersion. Its SpringBoard shortcut and tweak injection depend on jailbreak infrastructure; it does not simply overwrite installed Info.plist files.
++
++This patch implements the requested import/extract/edit/repackage/share workflow instead. Apps reading the edited bundle keys can observe the new values after installation. It is NOT a full runtime-hook equivalent. No iOS-version spoofing, dylib injection, decryption, signing, direct installation, or server-check bypass is implemented. Hardcoded versions, receipts, integrity checks, backend minimum versions, missing APIs, and entitlements can still stop an app from working. Lowering MinimumOSVersion would not add missing OS APIs, so it is deliberately left unchanged.
++
++## Test on your iOS 15.6.1 device
++
++TrollStore is useful for initial install/import/export/share tests. Use a controlled app you built with an About screen displaying Bundle.main.infoDictionary version keys. A copy of this editor IPA can also serve as a test: its About page reads those keys. Back up exports before replacing the installed editor.
++
++Disable the original version-spoofing tweak for the target while comparing results, otherwise runtime hooks can mask disk values. First change only app version and confirm build/identifier/minimum OS remain unchanged. Then test build changes, nested extensions, provider imports, cancellation, repeat export, and iPad sharing.
++
++A TrollStore success does NOT prove stock-iOS compatibility: also test an ordinary sandboxed install via AltStore/SideStore or another signer, preferably on a non-jailbroken device. Do not uninstall a valuable app without a data backup to resolve a signing conflict. Different teams/identifiers may change keychain and app-group access independently of version editing.
++
++## Robustness and limits
++
++- ZIPFoundation 0.9.20 is pinned, replacing the original unpinned ZipArchive branch.
++- Serial background processing, security-scoped coordinated reads, visible errors, cancellation, and partial-output cleanup.
++- Input copied to a private unique workspace, never edited in place. Working copies are cleared on next launch; exports persist until deleted.
++- Rejects traversal/duplicate/case-colliding paths, file-directory conflicts, symlinks, bad metadata, CRC/size mismatches, and encrypted main/nested app executables.
++- All symlinks are rejected, including legitimate ones. Password-protected and unusual archives may be unsupported. Limits: 4 GiB input/expanded size and 100,000 entries. Large archives still require substantial storage and may exceed device memory/time limits.
++- Encryption detection is not a complete compatibility/security audit of every embedded library. Import trusted apps only.
++- Keep the app foregrounded for large files; background execution is limited by iOS. Cancellation may wait for file-provider copying.
++- The editor makes no network requests and uploads no IPA contents. CI downloads dependencies, not the IPAs you import on your phone.
++
++## Validation status
++
++The actual production MyFileManager.swift and MachOInspector.swift compiled and passed **16 XCTest tests, zero failures**, on Linux with Swift 6.0.3 in Swift 5 language mode during this session. Tests cover metadata edits, binary/XML preservation, resources/executable permissions, repeat-export isolation, selected nested changes, corrupted CRCs, traversal, duplicates, symlinks, cancellation/limits, encrypted executables, and malformed thin/fat Mach-O headers. The final patch includes the exact compile/validation fixes from that passing run.
++
++All Swift source files also passed a syntax parse; shell syntax, workflow YAML, XML/plist and dependency-lock checks passed. The transient raw test log was lost in a sandbox reset; rerun `swift test --jobs 2` for fresh results. ZIPFoundation emits an unhandled privacy-manifest resource warning in SwiftPM; it did not prevent core tests.
++
++**Not verified here:** full SwiftUI/Xcode typechecking/build, Apple package/signature verification, physical-device install, file-provider behavior, or stock-iOS compatibility. The supplied macOS workflow runs the tests and performs the Apple build/package checks. This deliverable is source + workflow, not a prebuilt or device-tested IPA.
++
++## Attribution and licensing
++
++Original app/UI/assets: https://github.com/powenn/ModMyIPA
++Runtime behavior reference: https://github.com/0xkuj/3DAppVersionSpoofer
++Archive library: https://github.com/weichsel/ZIPFoundation (MIT).
++
++No Theos/Logos hook code is included. The supplied ModMyIPA archive has no LICENSE file. Preserve attribution and check upstream terms/permission before publicly redistributing a derivative binary; this patch does not grant a blanket license for upstream material. Historical screenshots in Screenshots/ are upstream screenshots, not the patched UI.
++
++## References
++
++- https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring
++- https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion
++- https://developer.apple.com/documentation/foundation/nsurl/startaccessingsecurityscopedresource()
++- https://github.com/weichsel/ZIPFoundation/tree/0.9.20
++- https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md
++- https://github.com/opa334/TrollStore
+diff --git a/Tests/IPACoreTests/IPACoreTests.swift b/Tests/IPACoreTests/IPACoreTests.swift
+new file mode 100644
+index 0000000..1b8d2dc
+--- /dev/null
++++ b/Tests/IPACoreTests/IPACoreTests.swift
+@@ -0,0 +1,197 @@
++import XCTest
++import Foundation
++import ZIPFoundation
++@testable import IPACore
++
++final class IPACoreTests: XCTestCase {
++    var root: URL!
++    let mainPath = "Payload/Demo.app/Info.plist"
++    let nestedPath = "Payload/Demo.app/PlugIns/Widget.appex/Info.plist"
++    let frameworkPath = "Payload/Demo.app/Frameworks/Library.framework/Info.plist"
++    override func setUpWithError() throws {
++        root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
++    }
++    override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
++
++    func words(_ values: [UInt32], little: Bool = true) -> Data {
++        Data(values.flatMap { value in
++            (0..<4).map { UInt8(truncatingIfNeeded: value >> ((little ? $0 : 3 - $0) * 8)) }
++        })
++    }
++    func binary(encrypted: Bool = false) -> Data {
++        // Synthetic Mach-O header with one encryption command. Not executable code.
++        words([0xfeedfacf, 0x0100000c, 0, 2, 1, 24, 0, 0,
++               0x2c, 24, 0, 0, encrypted ? 1 : 0, 0])
++    }
++    func plist(format: PropertyListSerialization.PropertyListFormat = .binary,
++               identifier: String = "org.example.demo", executable: String = "Demo") throws -> Data {
++        try PropertyListSerialization.data(fromPropertyList: [
++            "CFBundleExecutable": executable, "CFBundleIdentifier": identifier,
++            "CFBundleName": "Demo", "CFBundleShortVersionString": "1.2.3",
++            "CFBundleVersion": "42", "MinimumOSVersion": "15.0",
++            "CustomMetadata": ["array": [1, 2], "flag": true]
++        ], format: format, options: 0)
++    }
++    func append(_ archive: Archive, path: String, data: Data, type: Entry.EntryType = .file, permissions: UInt16 = 0o644) throws {
++        try archive.addEntry(with: path, type: type, uncompressedSize: Int64(data.count),
++                             permissions: permissions, compressionMethod: .none) { offset, count in
++            data.subdata(in: Int(offset)..<min(Int(offset) + count, data.count))
++        }
++    }
++    func fixture(xml: Bool = false, encrypted: Bool = false) throws -> URL {
++        let url = root.appendingPathComponent(UUID().uuidString + ".ipa")
++        let archive = try Archive(url: url, accessMode: .create)
++        try append(archive, path: mainPath, data: plist(format: xml ? .xml : .binary))
++        try append(archive, path: "Payload/Demo.app/Demo", data: binary(encrypted: encrypted), permissions: 0o755)
++        try append(archive, path: nestedPath, data: plist(identifier: "org.example.demo.widget", executable: "Widget"))
++        try append(archive, path: "Payload/Demo.app/PlugIns/Widget.appex/Widget", data: binary(), permissions: 0o755)
++        try append(archive, path: frameworkPath, data: plist(identifier: "org.example.library"))
++        try append(archive, path: "Payload/Demo.app/_CodeSignature/CodeResources", data: Data("original-signature-metadata".utf8))
++        try append(archive, path: "Payload/Demo.app/embedded.mobileprovision", data: Data("original-profile".utf8))
++        try append(archive, path: "Payload/Demo.app/resource.dat", data: Data(repeating: 137, count: 150_000))
++        try append(archive, path: "iTunesMetadata.plist", data: Data("outside-payload-preserved".utf8))
++        return url
++    }
++    func prepare(_ url: URL, limits: IPALimits = IPALimits()) throws -> PreparedIPA {
++        try MyFileManager(limits: limits).prepare(ipa: url, workspaceParent: root.appendingPathComponent("work"))
++    }
++    func export(_ ipa: PreparedIPA, version: String? = "9.8.7", build: String? = "123", sync: Bool = true) throws -> URL {
++        try MyFileManager().export(ipa, changes: VersionChanges(version: version, build: build, synchronizeNestedBundles: sync), outputDirectory: root.appendingPathComponent("out"))
++    }
++    func data(_ path: String, in url: URL) throws -> Data {
++        let archive = try Archive(url: url, accessMode: .read)
++        let entry = try XCTUnwrap(archive[path])
++        var result = Data()
++        let checksum = try archive.extract(entry) { result.append($0) }
++        XCTAssertEqual(checksum, entry.checksum)
++        return result
++    }
++    func info(_ path: String, in url: URL) throws -> [String: Any] {
++        try XCTUnwrap(PropertyListSerialization.propertyList(from: data(path, in: url), options: [], format: nil) as? [String: Any])
++    }
++
++    func testRoundTripPreservesOriginalBinaryResourcesAndPermissions() throws {
++        let input = try fixture()
++        let original = try Data(contentsOf: input)
++        let prepared = try prepare(input)
++        XCTAssertEqual(prepared.bundles.count, 2)
++        let output = try export(prepared)
++        XCTAssertEqual(try Data(contentsOf: input), original)
++        XCTAssertEqual(try info(mainPath, in: output)["CFBundleShortVersionString"] as? String, "9.8.7")
++        XCTAssertEqual(try info(mainPath, in: output)["CFBundleVersion"] as? String, "123")
++        XCTAssertEqual(try info(nestedPath, in: output)["CFBundleVersion"] as? String, "123")
++        XCTAssertEqual(try info(mainPath, in: output)["MinimumOSVersion"] as? String, "15.0")
++        XCTAssertEqual(try info(mainPath, in: output)["CFBundleIdentifier"] as? String, "org.example.demo")
++        let source = try Archive(url: input, accessMode: .read)
++        let destination = try Archive(url: output, accessMode: .read)
++        XCTAssertEqual(Set(source.map(\.path)), Set(destination.map(\.path)))
++        for entry in source where entry.path != mainPath && entry.path != nestedPath {
++            XCTAssertEqual(try data(entry.path, in: input), try data(entry.path, in: output), entry.path)
++        }
++        let executable = try XCTUnwrap(destination["Payload/Demo.app/Demo"])
++        XCTAssertEqual((executable.fileAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o755)
++        XCTAssertTrue(try data(mainPath, in: output).starts(with: Data("bplist00".utf8)))
++    }
++    func testXMLFormatAndUnknownMetadataPreserved() throws {
++        let output = try export(prepare(fixture(xml: true)))
++        XCTAssertTrue(try data(mainPath, in: output).starts(with: Data("<?xml".utf8)))
++        let custom = try XCTUnwrap(info(mainPath, in: output)["CustomMetadata"] as? [String: Any])
++        XCTAssertEqual(custom["flag"] as? Bool, true)
++    }
++    func testVersionOnlyPreservesBuild() throws {
++        let output = try export(prepare(fixture()), build: nil)
++        XCTAssertEqual(try info(mainPath, in: output)["CFBundleVersion"] as? String, "42")
++        XCTAssertEqual(try info(nestedPath, in: output)["CFBundleVersion"] as? String, "42")
++    }
++    func testBuildOnlyPreservesVersion() throws {
++        let output = try export(prepare(fixture()), version: nil)
++        XCTAssertEqual(try info(mainPath, in: output)["CFBundleShortVersionString"] as? String, "1.2.3")
++    }
++    func testRepeatedExportsDoNotLeakPreviousEdits() throws {
++        let input = try fixture()
++        let prepared = try prepare(input)
++        let first = try export(prepared)
++        let second = try export(prepared, version: "2.0.0", build: nil, sync: false)
++        XCTAssertNotEqual(first, second)
++        XCTAssertEqual(try info(mainPath, in: second)["CFBundleVersion"] as? String, "42")
++        XCTAssertEqual(try data(nestedPath, in: input), try data(nestedPath, in: second))
++        XCTAssertEqual(try Data(contentsOf: prepared.contents.appendingPathComponent(mainPath)), try data(mainPath, in: input))
++    }
++    func testRejectsInvalidVersions() {
++        for value in ["", "1", "1.2", "1.2.3.4", "-1.0.0", "1.2.x", "1.2.3\n"] {
++            XCTAssertThrowsError(try VersionChanges(version: value, build: nil).validate(), value)
++        }
++        XCTAssertThrowsError(try VersionChanges(version: nil, build: nil).validate())
++        XCTAssertThrowsError(try VersionChanges(version: nil, build: "1.234.5").validate())
++        XCTAssertNoThrow(try VersionChanges(version: "0.1.0", build: "123.4.5").validate())
++    }
++    func testRejectsUnsafePaths() {
++        for path in ["../escape", "/absolute", "a/../b", "a//b", "a\\b", "a/./b", "C:/file", "a\u{0}b"] {
++            XCTAssertThrowsError(try MyFileManager.safePath(path), path)
++        }
++    }
++    func testRejectsZipSlipAndCleansWorkspace() throws {
++        let input = try fixture()
++        do { let a = try Archive(url: input, accessMode: .update); try append(a, path: "../escape", data: Data([1])) }
++        XCTAssertThrowsError(try prepare(input))
++        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("escape").path))
++        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("work").path), [])
++    }
++    func testRejectsSymlinks() throws {
++        let input = try fixture()
++        do { let a = try Archive(url: input, accessMode: .update); try append(a, path: "Payload/link", data: Data("../../escape".utf8), type: .symlink) }
++        XCTAssertThrowsError(try prepare(input))
++    }
++    func testRejectsCaseCollidingParentDirectories() throws {
++        let input = try fixture()
++        do { let a = try Archive(url: input, accessMode: .update); try append(a, path: "payload/other", data: Data([1])) }
++        XCTAssertThrowsError(try prepare(input))
++    }
++    func testRejectsDuplicatePaths() throws {
++        let input = try fixture()
++        do { let a = try Archive(url: input, accessMode: .update); try append(a, path: mainPath, data: plist()) }
++        XCTAssertThrowsError(try prepare(input))
++    }
++    func testRejectsMissingExecutable() throws {
++        let input = try fixture()
++        let prepared = try prepare(input)
++        try FileManager.default.removeItem(at: prepared.contents.appendingPathComponent("Payload/Demo.app/Demo"))
++        XCTAssertThrowsError(try export(prepared))
++        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("out").path), [])
++    }
++    func testRejectsEncryptedMainExecutable() throws { XCTAssertThrowsError(try prepare(fixture(encrypted: true))) }
++    func testLimitsAndCancellation() throws {
++        let input = try fixture()
++        XCTAssertThrowsError(try prepare(input, limits: IPALimits(maxEntries: 2)))
++        XCTAssertThrowsError(try prepare(input, limits: IPALimits(maxBytes: 10)))
++        let cancelled = Progress(totalUnitCount: 1); cancelled.cancel()
++        XCTAssertThrowsError(try MyFileManager().prepare(ipa: input, workspaceParent: root.appendingPathComponent("work"), progress: cancelled))
++        let prepared = try prepare(input)
++        XCTAssertThrowsError(try MyFileManager().export(prepared, changes: VersionChanges(version: "2.0.0"), outputDirectory: root.appendingPathComponent("out"), progress: cancelled))
++    }
++    func testMachOThinFatAndMalformedHeaders() throws {
++        let file = root.appendingPathComponent("binary")
++        try binary().write(to: file)
++        XCTAssertFalse(try MachOInspector.isEncrypted(file))
++        try binary(encrypted: true).write(to: file)
++        XCTAssertTrue(try MachOInspector.isEncrypted(file))
++        var fat = words([0xcafebabe, 1, 0x0100000c, 0, 28, 56, 0], little: false)
++        fat.append(binary(encrypted: true))
++        try fat.write(to: file)
++        XCTAssertTrue(try MachOInspector.isEncrypted(file))
++        try Data([1, 2, 3]).write(to: file)
++        XCTAssertThrowsError(try MachOInspector.isEncrypted(file))
++        var malformed = binary(); malformed[36] = 255
++        try malformed.write(to: file)
++        XCTAssertThrowsError(try MachOInspector.isEncrypted(file))
++    }
++    func testRejectsCorruptCRC() throws {
++        let input = try fixture()
++        var raw = try Data(contentsOf: input)
++        let marker = Data("outside-payload-preserved".utf8)
++        let range = try XCTUnwrap(raw.range(of: marker)); raw[range.lowerBound] ^= 1
++        try raw.write(to: input)
++        XCTAssertThrowsError(try prepare(input))
++    }
++}
+diff --git a/compile.command b/compile.command
+index e5c3c8f..2dbf698 100644
+--- a/compile.command
++++ b/compile.command
+@@ -1,31 +1,35 @@
+ #!/bin/bash
+-
+-set -ex
+-
+-# cd script dir
+-cd "$(dirname "$0")" || exit
+-
+-GIT_ROOT=$(pwd)
+-
+-rm -rf build Payload ModMyIPA.ipa # ModMyIPA-TS.ipa
+-
+- xcodebuild -project "$GIT_ROOT/ModMyIPA.xcodeproj" \
+- -scheme ModMyIPA -configuration Release \
+- -derivedDataPath "$GIT_ROOT/build" \
+- -destination 'generic/platform=iOS' \
+- -sdk iphoneos \
+- clean build \
+- CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ONLY_ACTIVE_ARCH=NO \
+- PRODUCT_BUNDLE_IDENTIFIER="com.powen.ModMyIPA" \
+-
+-#ldid -S -M build/Build/Products/Release-iphoneos/ModMyIPA.app
+-ln -sf build/Build/Products/Release-iphoneos Payload
+-#zip -r9 ModMyIPA.ipa Payload/ModMyIPA.app
+-
+-
+-# Build TrollStore Support Edition
+-
+-#cp -R build/Build/Products/Release-iphoneos/ModMyIPA.app build/Build/Products/Release-iphoneos/ModMyIPA-TS.app
+-
+-ldid -SModMyIPA.xml -M build/Build/Products/Release-iphoneos/ModMyIPA.app
+-zip -r9 ModMyIPA.ipa Payload/ModMyIPA.app
++# macOS/Xcode only. No Apple credentials, signing secrets, or ldid required.
++set -euo pipefail
++cd "$(dirname "$0")"
++ROOT="$PWD"
++BUILD="$ROOT/build"
++DIST="$ROOT/dist"
++command -v xcodebuild >/dev/null || { echo 'Use macOS/Xcode or the GitHub Actions workflow.'; exit 1; }
++mkdir -p "$DIST"
++xcodebuild -resolvePackageDependencies -project ModMyIPA.xcodeproj -scheme ModMyIPA \
++  -derivedDataPath "$BUILD" -onlyUsePackageVersionsFromResolvedFile
++xcodebuild -project ModMyIPA.xcodeproj -scheme ModMyIPA \
++  -configuration Release -destination 'generic/platform=iOS' -sdk iphoneos \
++  -derivedDataPath "$BUILD" -disableAutomaticPackageResolution \
++  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
++  DEVELOPMENT_TEAM='' ONLY_ACTIVE_ARCH=NO ARCHS=arm64 build
++APP="$BUILD/Build/Products/Release-iphoneos/ModMyIPA.app"
++test -f "$APP/Info.plist"
++test -f "$APP/ModMyIPA"
++STAGING=$(mktemp -d "$BUILD/package.XXXXXX")
++trap 'rm -rf "$STAGING"' EXIT
++mkdir "$STAGING/Payload"
++ditto "$APP" "$STAGING/Payload/ModMyIPA.app"
++rm -f "$DIST/VersionEditor-unsigned.ipa" "$DIST/VersionEditor-adhoc.ipa"
++(cd "$STAGING" && /usr/bin/zip -qry "$DIST/VersionEditor-unsigned.ipa" Payload)
++# Extra ad-hoc artifact for TrollStore testing. Not Apple-signed or permasigned.
++while IFS= read -r -d '' item; do
++  /usr/bin/codesign --force --sign - --timestamp=none "$item"
++done < <(find "$STAGING/Payload/ModMyIPA.app" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0)
++/usr/bin/codesign --force --sign - --timestamp=none --entitlements "$ROOT/ModMyIPA.xml" "$STAGING/Payload/ModMyIPA.app"
++/usr/bin/codesign --verify --deep --strict "$STAGING/Payload/ModMyIPA.app"
++(cd "$STAGING" && /usr/bin/zip -qry "$DIST/VersionEditor-adhoc.ipa" Payload)
++python3 scripts/verify_ipa.py "$DIST/VersionEditor-unsigned.ipa" "$DIST/VersionEditor-adhoc.ipa"
++(cd "$DIST" && shasum -a 256 VersionEditor-unsigned.ipa VersionEditor-adhoc.ipa > SHA256SUMS.txt)
++echo 'IPAs are in dist/. Re-sign with your sideloading tool or install using TrollStore.'
+diff --git a/scripts/verify_ipa.py b/scripts/verify_ipa.py
+new file mode 100644
+index 0000000..5e1faa6
+--- /dev/null
++++ b/scripts/verify_ipa.py
+@@ -0,0 +1,33 @@
++#!/usr/bin/env python3
++"""Check CI editor IPA structure, plist, CRCs and executable permissions."""
++import plistlib
++import stat
++import sys
++import zipfile
++
++
++def verify(path):
++    with zipfile.ZipFile(path) as archive:
++        assert archive.testzip() is None, 'ZIP CRC failure'
++        names = archive.namelist()
++        assert len(names) == len(set(names)), 'Duplicate ZIP paths'
++        roots = {p.split('/')[1] for p in names if p.startswith('Payload/') and len(p.split('/')) > 2}
++        assert roots == {'ModMyIPA.app'}, roots
++        info = plistlib.loads(archive.read('Payload/ModMyIPA.app/Info.plist'))
++        assert info['CFBundleIdentifier'] == 'org.ipaeditor.VersionEditor', info
++        assert info['MinimumOSVersion'] == '15.0', info
++        assert info['CFBundleShortVersionString'] == '1.1.0', info
++        executable = 'Payload/ModMyIPA.app/' + info['CFBundleExecutable']
++        assert archive.read(executable)[:4] in (b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe'), 'Not arm64 Mach-O/universal'
++        mode = archive.getinfo(executable).external_attr >> 16
++        assert mode & stat.S_IXUSR, 'Executable permission lost'
++        assert info.get('UIFileSharingEnabled') is True
++        assert info.get('LSSupportsOpeningDocumentsInPlace') is True
++    print('Verified:', path)
++
++
++if __name__ == '__main__':
++    if len(sys.argv) < 2:
++        sys.exit('Usage: verify_ipa.py editor.ipa [other.ipa]')
++    for path in sys.argv[1:]:
++        verify(path)

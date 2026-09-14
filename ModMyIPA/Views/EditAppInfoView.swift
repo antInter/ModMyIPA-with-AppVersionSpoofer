@@ -1,44 +1,30 @@
-//
-//  ModifyView.swift
-//  ModMyIPA
-//
-//  Created by 蕭博文 on 2022/10/24.
-//
-
 import SwiftUI
 
 struct EditAppInfoView: View {
-    @StateObject var ipafile:IPAFile = .shared
-    @Environment(\.presentationMode) var presentationMode
-    
+    @ObservedObject private var model = IPAFile.shared
     var body: some View {
-        VStack{
-            VStack(alignment: .leading) {
-                Text("Customize App Name")
-                TextField("App Name", text: $ipafile.app_name)
-                    .textFieldStyle(.roundedBorder)
-                Text("Customize App Package Name\n(The name of .app directory)")
-                TextField("App Package Name", text: $ipafile.app_executable)
-                    .textFieldStyle(.roundedBorder)
-                Text("Customize App Bundle")
-                TextField("App Bundle", text: $ipafile.app_bundle)
-                    .textFieldStyle(.roundedBorder)
-            }.padding()
-            Button(action: {
-                self.presentationMode.wrappedValue.dismiss()
-            }, label: {
-                Text("Done")
-            }).padding()
+        Section {
+            Toggle("Edit app version", isOn: $model.editVersion)
+            if model.editVersion {
+                TextField("For example 3.2.1", text: $model.version)
+                    .keyboardType(.numbersAndPunctuation)
+                    .textInputAutocapitalization(.never).disableAutocorrection(true)
+                    .accessibilityLabel("New app version")
+            }
+            Toggle("Edit build number", isOn: $model.editBuild)
+            if model.editBuild {
+                TextField("For example 123", text: $model.build)
+                    .keyboardType(.numbersAndPunctuation)
+                    .textInputAutocapitalization(.never).disableAutocorrection(true)
+                    .accessibilityLabel("New build number")
+            }
+            if (model.prepared?.bundles.count ?? 0) > 1 {
+                Toggle("Sync nested apps and extensions", isOn: $model.synchronizeNested)
+            }
+        } header: {
+            Text("New version metadata")
+        } footer: {
+            Text("App version changes CFBundleShortVersionString. Build changes CFBundleVersion. Disabled fields keep their original values. Sync changes only enabled fields in nested .app/.appex bundles, not frameworks. Bundle IDs, executables, and MinimumOSVersion are left alone.")
         }
-        .padding()
-        .onTapGesture {
-            hideKeyboard()
-        }
-    }
-}
-
-struct EditAppInfoView_Previews: PreviewProvider {
-    static var previews: some View {
-        EditAppInfoView()
     }
 }

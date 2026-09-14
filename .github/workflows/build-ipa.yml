@@ -1,0 +1,58 @@
+name: Build IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+permissions:
+  contents: read
+concurrency:
+  group: ipa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check build configuration
+        run: |
+          xcodebuild -version
+          swift --version
+          plutil -lint ModMyIPA.xml ModMyIPA.xcodeproj/project.pbxproj
+          bash -n compile.command
+      - name: Test production IPA core
+        run: |
+          set -o pipefail
+          swift test --jobs 2 2>&1 | tee core-tests.log
+      - name: Build and package arm64 IPA
+        run: |
+          set -o pipefail
+          bash compile.command 2>&1 | tee xcode-build.log
+      - name: Upload IPA packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPA-Version-Editor-${{ github.run_number }}
+          path: |
+            dist/VersionEditor-unsigned.ipa
+            dist/VersionEditor-adhoc.ipa
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_number }}
+          path: |
+            core-tests.log
+            xcode-build.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Installation reminder
+        run: |
+          echo 'Download and extract the artifact ZIP. Re-sign VersionEditor-unsigned.ipa with your sideloading tool. VersionEditor-adhoc.ipa is an extra TrollStore test artifact, NOT Apple-signed. Minimum iOS: 15.0. No signing secrets are required.' >> "$GITHUB_STEP_SUMMARY"

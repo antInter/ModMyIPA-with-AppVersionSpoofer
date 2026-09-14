@@ -1,5 +1,13 @@
 Payload
 .DS_Store
-build
+build/
+dist/
+.build/
+.swiftpm/
 *.ipa
 *.xcuserstate
+xcuserdata/
+*.log
+*.p12
+*.mobileprovision
+__pycache__/

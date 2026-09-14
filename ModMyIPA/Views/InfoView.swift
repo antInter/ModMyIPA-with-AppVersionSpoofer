@@ -1,56 +1,35 @@
-//
-//  InfoView.swift
-//  ModMyIPA
-//
-//  Created by 蕭博文 on 2022/10/24.
-//
-
 import SwiftUI
 
 struct InfoView: View {
-    @StateObject var myuserdefaults:MyUserDefaults = .shared
-    @State var showPackagesList:Bool = false
-    
+    @ObservedObject private var model = IPAFile.shared
     var body: some View {
         Form {
-            Section(header: Text("version")){
-                Text("\(appVersion!).\(buildVersion!)")
+            Section("About") {
+                Text("IPA Version Editor \(appVersion ?? "?") (\(buildVersion ?? "?"))")
+                Text("Native SwiftUI patch of ModMyIPA by powenn. Inspired by analysis of 0xkuj's 3DAppVersionSpoofer.")
             }
-            Section(header: Text("View files"), content: {
-                Button("View the output package list", action: {
-                    print("View package list button pressed")
-                    showPackagesList.toggle()
-                }).sheet(isPresented: $showPackagesList, content: {
-                    NavigationView {
-                        PackageListView()
-                            .navigationBarTitle("PackageList", displayMode: .inline)
-                    }
-                })
-            })
-            Section(header: Text("Clean up"), content: {
-                Button("Clean up tmp directory", action: {
-                    MyFileManager.shared.resetTmp()
-                })
-                Button("Clean up output directory", action: {
-                    MyFileManager.shared.resetOutput()
-                })
-            })
-            Section(header: Text("source code")){
-                Link(destination: URL(string: "https://github.com/powenn/ModMyIPA")!, label: {
-                    HStack{
-                        Text("View on Github")
-                    }
-                })
+            Section("What this does") {
+                Text("Edits version keys in an imported IPA's Info.plist and repackages it. Apps reading those keys can see the new values after re-signing and installation.")
             }
-            Section(footer: Text("Made by @powenn"), content: {})
-            Section(footer: Text("Output files path : \(outputDirectory.path)"), content: {})
-            Section(footer: Text("A nice sentence inspired me\nfrom a nice guy named yammy in Discord\n\"If it's what you want to do,\ndon't let anybody stop you\""), content: {})
-        }
-    }
-}
-
-struct InfoView_Previews: PreviewProvider {
-    static var previews: some View {
-        InfoView()
+            Section("What this does not do") {
+                Text("No jailbreak hooks, iOS version spoofing, dylib injection, signing, installation, App Store decryption, or server-check bypass. Hardcoded versions, receipts, and integrity checks may still prevent an app from working.")
+                Text("An edited minimum iOS requirement would not add missing operating-system APIs. This editor leaves it unchanged.")
+                Text("Encrypted main/nested app executables are rejected. Symlinks, ambiguous paths, and archives exceeding 4 GiB or 100,000 entries are also rejected. The encryption check is not a full compatibility or security audit of every library.")
+            }
+            Section("Testing on iOS 15.6.1") {
+                Text("TrollStore is useful for an initial test, but does not prove normal sideloading works. Also test a sandboxed install through AltStore, SideStore, or another signer. Disable the original version-spoofing tweak for the target app while comparing results.")
+                Text("Keep the app in the foreground while working on large IPAs. iOS grants only limited background execution time; cancellation may wait for file-provider copying to finish.")
+            }
+            Section("Storage") {
+                Button("Clear imported working copy", role: .destructive) { model.clearImport() }
+                    .disabled(model.processing || model.prepared == nil)
+                Text("Working copies are cleared on next launch. Exports remain until you delete them. The editor makes no network requests and uploads no IPA contents.")
+            }
+            Section("Upstream projects") {
+                Link("ModMyIPA — powenn", destination: URL(string: "https://github.com/powenn/ModMyIPA")!)
+                Link("3DAppVersionSpoofer — 0xkuj", destination: URL(string: "https://github.com/0xkuj/3DAppVersionSpoofer")!)
+                Link("ZIPFoundation — archive library", destination: URL(string: "https://github.com/weichsel/ZIPFoundation")!)
+            }
+        }.navigationTitle("About & limitations")
     }
 }

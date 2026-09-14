@@ -1,116 +1,178 @@
-//
-//  IPAFile.swift
-//  ModMyIPA
-//
-//  Created by 蕭博文 on 2022/10/24.
-//
-
+// Original ModMyIPA by powenn. Reworked state and background processing.
 import Foundation
-import ZipArchive
+import SwiftUI
+import UIKit
 
-class IPAFile:ObservableObject {
-    private init() {}
+struct EditorNotice: Identifiable {
+    let id = UUID()
+    let message: String
+}
+struct SharedIPA: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+@MainActor
+final class IPAFile: ObservableObject {
     static let shared = IPAFile()
-    
-    var fileURL:URL = URL(fileURLWithPath: "")
-    @Published var fileName:String = ""
-    var contentDirURL:URL = URL(fileURLWithPath: "")
-    var fileImported:Bool = false
-    var payloadURL:URL = URL(fileURLWithPath: "")
-    var payloadExist:Bool = false
-    var appContentExist:Bool = false
-    var infoPlistExist:Bool = false
-    var app_executableExist:Bool = false
-    @Published var appNameInPayload:String = ""
-    var infoPlistPath:URL = URL(fileURLWithPath: "")
-    
-    var config: [String: Any]?
-    @Published var app_executable:String = ""
-    @Published var app_name:String = ""
-    @Published var app_bundle:String = ""
-    @Published var app_min_ios:String = ""
-    
-    @Published var processing:Bool = false
-    
-    func getPayloadURL()  {
-        self.payloadURL = contentDirURL.appendingPathComponent("Payload")
-        if FileManager.default.fileExists(atPath: payloadURL.path) {
-            payloadExist=true
-        } else {
-            payloadExist = false
-        }
-    }
-    
-    func getAppNameInPayload() {
-        let Content = try? FileManager.default.contentsOfDirectory(atPath: self.payloadURL.path)
-        for content in Content! {
-            if content.hasSuffix(".app") {
-                appNameInPayload = content
-                appContentExist = true
-                break
-            }
-            appContentExist = false
-        }
-    }
-    
-    func getInfoPlistPath()  {
-        if self.appContentExist {
-            infoPlistPath = self.payloadURL.appendingPathComponent("\(self.appNameInPayload)/Info.plist")
-        }
-        if FileManager.default.fileExists(atPath: infoPlistPath.path){
-            infoPlistExist = true
-        } else {
-            infoPlistExist = false
-        }
-    }
-    
-    func getInfoPlistValue() {
-        do {
-            // get Info in plist file
-            let infoPlistData = try Data(contentsOf: infoPlistPath)
-            if let dict = try PropertyListSerialization.propertyList(from: infoPlistData, options: [], format: nil) as? [String: Any] {
-                config = dict
-                // check is this Info.plist valid
-                if ((config?["CFBundleExecutable"]) != nil) {
-                    app_executable = (config?["CFBundleExecutable"] as! String)
-                    app_name = config?["CFBundleName"] as! String
-                    app_bundle = config?["CFBundleIdentifier"] as! String
-                    app_min_ios = config?["MinimumOSVersion"] as! String? ?? "14.0"
-                    app_executableExist = true
-                } else {
-                    app_executableExist = false
+    @Published private(set) var prepared: PreparedIPA?
+    @Published private(set) var processing = true
+    @Published private(set) var status = "Preparing storage…"
+    @Published private(set) var fileName = ""
+    @Published private(set) var outputs: [URL] = []
+    @Published var version = ""
+    @Published var build = ""
+    @Published var editVersion = true
+    @Published var editBuild = false
+    @Published var synchronizeNested = true
+    @Published var notice: EditorNotice?
+    @Published var share: SharedIPA?
+
+    private let queue = DispatchQueue(label: "ipa.editor.processing", qos: .userInitiated)
+    private var progress = Progress(totalUnitCount: 1)
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private init() {
+        Task {
+            do {
+                let files = try await perform {
+                    let fm = FileManager.default
+                    if fm.fileExists(atPath: tmpDirectory.path) { try fm.removeItem(at: tmpDirectory) }
+                    try fm.createDirectory(at: tmpDirectory, withIntermediateDirectories: true)
+                    try fm.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+                    for url in try fm.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil)
+                        where url.pathExtension == "partial" {
+                        try fm.removeItem(at: url)
+                    }
+                    return try Self.outputFiles()
                 }
-            }
-        } catch {
-            print(error.localizedDescription)
+                outputs = files
+                status = "Ready to import"
+            } catch { show(error) }
+            processing = false
         }
     }
-    
-    func updateInfoPlistValue() {
-        let plistDict = NSMutableDictionary(contentsOfFile: infoPlistPath.path)
-        plistDict!.setObject(app_name, forKey: "CFBundleDisplayName" as NSCopying)
-        plistDict!.write(toFile: infoPlistPath.path, atomically: false)
-        plistDict!.setObject(app_bundle, forKey: "CFBundleIdentifier" as NSCopying)
-        plistDict!.write(toFile: infoPlistPath.path, atomically: false)
-    }
-    
-    func moveModdedPackage() {
-        do {
-            if appNameInPayload != "\(app_executable).app" {
-                try FileManager.default.moveItem(at: payloadURL.appendingPathComponent(appNameInPayload), to: payloadURL.appendingPathComponent("\(app_executable).app"))
-            }
-            try FileManager.default.moveItem(at: contentDirURL, to: tmpDirectory.appendingPathComponent(app_executable))
-        } catch {
-            print(error.localizedDescription)
+
+    private func perform<T>(_ work: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { continuation.resume(with: Result { try work() }) }
         }
     }
-    
-    func zipToIPA() {
-        SSZipArchive.createZipFile(atPath: outputDirectory.appendingPathComponent("\(app_executable).ipa").path,withContentsOfDirectory: tmpDirectory.appendingPathComponent(app_executable).path)
+
+    nonisolated private static func outputFiles() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension.lowercased() == "ipa" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
-            
-    func resultIPAExist() -> Bool {
-        return FileManager.default.fileExists(atPath: outputDirectory.appendingPathComponent("\(app_executable).ipa").path)
+
+    func show(_ error: Error) {
+        notice = EditorNotice(message: error.localizedDescription)
+        status = "Operation did not complete"
     }
-    
+
+    private func begin(_ text: String) -> Progress {
+        processing = true
+        status = text
+        progress = Progress(totalUnitCount: 1)
+        let current = progress
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "IPA processing") { current.cancel() }
+        return current
+    }
+
+    private func finish() {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+        processing = false
+    }
+
+    func cancel() { progress.cancel(); status = "Cancelling…" }
+
+    func importIPA(_ url: URL) {
+        guard !processing else { return }
+        let current = begin("Copying, validating, and extracting…")
+        let old = prepared
+        prepared = nil
+        fileName = ""
+        Task {
+            defer { finish() }
+            do {
+                let result = try await perform {
+                    if let old { try FileManager.default.removeItem(at: old.workspace) }
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    // A false access result may mean the URL is already inside our sandbox.
+                    // Let the actual coordinated read determine whether it is accessible.
+                    let coordinator = NSFileCoordinator()
+                    var coordinationError: NSError?
+                    var result: Result<PreparedIPA, Error>?
+                    coordinator.coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinationError) { readableURL in
+                        result = Result { try MyFileManager().prepare(ipa: readableURL, workspaceParent: tmpDirectory, progress: current) }
+                    }
+                    if let coordinationError { throw coordinationError }
+                    guard let result else { throw IPAError("The file provider did not supply the IPA. Download it in Files and try again.") }
+                    return try result.get()
+                }
+                prepared = result
+                fileName = url.lastPathComponent
+                version = result.main.version
+                build = result.main.build
+                editVersion = true
+                editBuild = false
+                synchronizeNested = true
+                status = "Ready to edit"
+            } catch { show(error) }
+        }
+    }
+
+    func exportIPA() {
+        guard !processing, let prepared else { return }
+        let changes = VersionChanges(
+            version: editVersion ? version.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+            build: editBuild ? build.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+            synchronizeNestedBundles: synchronizeNested)
+        do { try changes.validate() } catch { show(error); return }
+        let current = begin("Repackaging and verifying edited metadata…")
+        Task {
+            defer { finish() }
+            do {
+                let url = try await perform {
+                    try MyFileManager().export(prepared, changes: changes, outputDirectory: outputDirectory, progress: current)
+                }
+                // Publish success even if refreshing the directory list later fails.
+                outputs.append(url)
+                status = "Exported. Re-sign before installing."
+                share = SharedIPA(url: url)
+            } catch { show(error) }
+        }
+    }
+
+    func deleteOutputs(_ urls: [URL]) {
+        guard !processing else { return }
+        _ = begin("Deleting selected exports…")
+        Task {
+            defer { finish() }
+            do {
+                let files = try await perform {
+                    for url in urls { try FileManager.default.removeItem(at: url) }
+                    return try Self.outputFiles()
+                }
+                outputs = files
+                status = "Exports updated"
+            } catch { show(error) }
+        }
+    }
+
+    func clearImport() {
+        guard !processing, let prepared else { return }
+        _ = begin("Clearing imported working copy…")
+        Task {
+            defer { finish() }
+            do {
+                try await perform { try FileManager.default.removeItem(at: prepared.workspace) }
+                self.prepared = nil
+                fileName = ""
+                status = "Ready to import"
+            } catch { show(error) }
+        }
+    }
 }
